@@ -166,6 +166,8 @@ type DbBillRow = {
   treatment_total: number;
   medicine_total: number;
   gst_total: number;
+  treatment_discount?: number;
+  medicine_discount?: number;
   grand_total: number;
   amount_paid: number;
   pending_amount: number;
@@ -486,6 +488,8 @@ const mapBill = (row: DbBillRow): Bill => {
     treatmentTotal: row.treatment_total,
     medicineTotal: row.medicine_total,
     gstTotal: row.gst_total ?? 0,
+    treatmentDiscount: row.treatment_discount ?? 0,
+    medicineDiscount: row.medicine_discount ?? 0,
     grandTotal: row.grand_total,
     amountPaid: row.amount_paid,
     pendingAmount: row.pending_amount,
@@ -631,6 +635,8 @@ export class PostgresStorage implements IStorage {
     // Bills extensions
     await pool.query(`
       ALTER TABLE bills ADD COLUMN IF NOT EXISTS gst_total DOUBLE PRECISION DEFAULT 0;
+      ALTER TABLE bills ADD COLUMN IF NOT EXISTS treatment_discount DOUBLE PRECISION DEFAULT 0;
+      ALTER TABLE bills ADD COLUMN IF NOT EXISTS medicine_discount DOUBLE PRECISION DEFAULT 0;
     `);
 
     // Tooth Records
@@ -1186,6 +1192,25 @@ export class PostgresStorage implements IStorage {
   async deleteTreatment(id: string): Promise<boolean> {
     await this.waitForReady();
     const dbId = this.convertId("treatments", id);
+
+    // Check for usage in tooth_records
+    const { rows: toothUsage } = await pool.query(
+      "SELECT 1 FROM tooth_records WHERE treatment_id = $1 LIMIT 1",
+      [dbId]
+    );
+    if (toothUsage.length > 0) {
+      throw new Error("Cannot delete treatment because it is assigned to patient tooth records.");
+    }
+
+    // Check for usage in treatment_sittings
+    const { rows: sittingUsage } = await pool.query(
+      "SELECT 1 FROM treatment_sittings WHERE treatment_id = $1 LIMIT 1",
+      [dbId]
+    );
+    if (sittingUsage.length > 0) {
+      throw new Error("Cannot delete treatment because it is part of existing treatment plans.");
+    }
+
     const result = await pool.query("DELETE FROM treatments WHERE id = $1", [dbId]);
     const success = (result.rowCount ?? 0) > 0;
     if (success) {

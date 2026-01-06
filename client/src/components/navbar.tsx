@@ -13,11 +13,12 @@ import {
   Heart,
   Calendar,
   Database,
-  ChevronDown
-  // LogOut removed
+  ChevronDown,
+  LogOut
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/components/theme-provider";
+import { useAuth } from "@/hooks/use-auth";
 import { useToast } from "@/hooks/use-toast";
 import {
   DropdownMenu,
@@ -87,7 +88,12 @@ function NavDropdown({ item, isActive }: { item: any, isActive: boolean }) {
 export function Navbar() {
   const [location, setLocation] = useLocation();
   const { theme, setTheme } = useTheme();
+  const { user, logoutMutation } = useAuth();
   const { toast } = useToast();
+
+  // If not logged in, don't show navbar (except maybe specific pages, but usually App handles this logic)
+  // However, since we protect routes, if we are in a protected route, user is present.
+  if (!user) return null;
 
   return (
     <nav className="sticky top-0 z-50 w-full border-b bg-card/95 backdrop-blur supports-[backdrop-filter]:bg-card/80">
@@ -128,6 +134,19 @@ export function Navbar() {
           </div>
 
           <div className="flex items-center gap-2">
+            <span className="text-sm text-muted-foreground hidden md:inline-block pr-2 border-r mr-2">
+              {user?.username ? `Admin: ${user.username}` : ''}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon"
+              onClick={() => logoutMutation.mutate()}
+              disabled={logoutMutation.isPending}
+              title="Logout"
+              className="hidden sm:flex"
+            >
+              <LogOut className="w-5 h-5" />
+            </Button>
             <Button
               variant="ghost"
               size="icon"

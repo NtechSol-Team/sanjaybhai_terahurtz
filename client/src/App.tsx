@@ -36,20 +36,41 @@ function PageLoader() {
   );
 }
 
+import { useAuth, AuthProvider } from "@/hooks/use-auth";
+import AuthPage from "@/pages/auth";
+
+function ProtectedRoute({ component: Component, ...rest }: { component: React.ComponentType<any> } & any) {
+  const { user, isLoading } = useAuth();
+
+  if (isLoading) {
+    return <PageLoader />;
+  }
+
+  if (!user) {
+    return <AuthPage />;
+  }
+
+  return <Component {...rest} />;
+}
+
 function Router() {
   return (
     <Suspense fallback={<PageLoader />}>
       <Switch>
-        <Route path="/" component={Dashboard} />
-        <Route path="/registration" component={Registration} />
-        <Route path="/patient/:id" component={PatientDetails} />
-        <Route path="/billing" component={BillingCreate} />
-        <Route path="/bills" component={BillingManage} />
-        <Route path="/medicines" component={Medicines} />
-        <Route path="/treatments" component={Treatments} />
-        <Route path="/expenses" component={Expenses} />
-        <Route path="/appointments" component={AppointmentMaster} />
-        <Route path="/reports" component={Reports} />
+        <Route path="/auth" component={AuthPage} />
+        {/* Protected Routes */}
+        <Route path="/" component={() => <ProtectedRoute component={Dashboard} />} />
+        <Route path="/registration" component={() => <ProtectedRoute component={Registration} />} />
+        <Route path="/patient/:id" component={(params) => <ProtectedRoute component={PatientDetails} params={params} />} />
+        <Route path="/billing" component={() => <ProtectedRoute component={BillingCreate} />} />
+        <Route path="/bills" component={() => <ProtectedRoute component={BillingManage} />} />
+        <Route path="/medicines" component={() => <ProtectedRoute component={Medicines} />} />
+        <Route path="/treatments" component={() => <ProtectedRoute component={Treatments} />} />
+        <Route path="/expenses" component={() => <ProtectedRoute component={Expenses} />} />
+        <Route path="/appointments" component={() => <ProtectedRoute component={AppointmentMaster} />} />
+        <Route path="/reports" component={() => <ProtectedRoute component={Reports} />} />
+
+        {/* Fallback */}
         <Route component={NotFound} />
       </Switch>
     </Suspense>
@@ -60,20 +81,22 @@ function App() {
   return (
     <ThemeProvider defaultTheme="light" storageKey="clinic-care-theme">
       <QueryClientProvider client={queryClient}>
-        <TooltipProvider>
-          <div className="min-h-screen bg-background pb-20">
-            <Navbar />
-            <main>
-              <Router />
-            </main>
-          </div>
-          <footer className="fixed left-0 bottom-0 z-40 w-full h-12 border-t bg-card/95 text-sm flex items-center justify-center text-muted-foreground backdrop-blur">
-            <div className="max-w-[1600px] mx-auto px-4 text-center">
-              Copyright © 2025 Nakrani Techno & Solution LLP. All Rights Reserved.
+        <AuthProvider>
+          <TooltipProvider>
+            <div className="min-h-screen bg-background pb-20">
+              <Navbar />
+              <main>
+                <Router />
+              </main>
             </div>
-          </footer>
-          <Toaster />
-        </TooltipProvider>
+            <footer className="fixed left-0 bottom-0 z-40 w-full h-12 border-t bg-card/95 text-sm flex items-center justify-center text-muted-foreground backdrop-blur">
+              <div className="max-w-[1600px] mx-auto px-4 text-center">
+                Copyright © {new Date().getFullYear()} Nakrani Techno & Solution LLP. All Rights Reserved.
+              </div>
+            </footer>
+            <Toaster />
+          </TooltipProvider>
+        </AuthProvider>
       </QueryClientProvider>
     </ThemeProvider>
   );

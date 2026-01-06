@@ -1,4 +1,3 @@
-
 import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
@@ -205,10 +204,16 @@ export default function AppointmentMaster() {
 
     const filteredAppointments = appointments.filter((appt: Appointment) => {
         const patientName = appt.patientName || patients.find(p => p.id === appt.patientId)?.name || "";
-        return (
+        const matchesSearch = (
             patientName.toLowerCase().includes(searchQuery.toLowerCase()) ||
             appt.reason.toLowerCase().includes(searchQuery.toLowerCase())
         );
+
+        // Filter out past appointments (date < today)
+        const todayStr = format(new Date(), "yyyy-MM-dd");
+        const isUpcoming = appt.date >= todayStr;
+
+        return matchesSearch && isUpcoming;
     });
 
     const getStatusBadge = (status: string) => {

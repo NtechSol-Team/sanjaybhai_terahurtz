@@ -1,4 +1,4 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
 import { Printer, FileText, AlertCircle } from "lucide-react";
@@ -87,6 +87,17 @@ export function DentalPrescription({ patientId, visitId, onClose }: Prescription
         queryKey: ["/api/medicines"],
     });
     const medicines = extractPaginatedData<Medicine>(medicinesResponse);
+
+    // Autofill diagnosis from patient details if available
+    useEffect(() => {
+        if (!diagnosis && patientData) {
+            const chiefComplaint = patientData.chiefDentalComplaint || "";
+            // We could also fetch latest visit here if needed, but starting with patient chief complaint
+            if (chiefComplaint) {
+                setDiagnosis(chiefComplaint);
+            }
+        }
+    }, [patientData, diagnosis]);
 
     const addMedicine = () => {
         setPrescribedMedicines([

@@ -7,7 +7,7 @@ import { registerRoutes } from "./routes";
 import { storage } from "./storage";
 import { serveStatic } from "./static";
 import { createServer } from "http";
-// session-based auth removed: express-session and connect-pg-simple imports removed
+import { setupAuth } from "./auth";
 
 const app = express();
 
@@ -100,6 +100,7 @@ app.use((req, res, next) => {
 (async () => {
   try {
     await storage.initialize();
+    setupAuth(app);
     await registerRoutes(httpServer, app);
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

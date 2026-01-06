@@ -119,8 +119,8 @@ export default function Dashboard() {
   const todayPaidRevenue = todayBills.reduce((sum, bill) => sum + bill.amountPaid, 0);
   const todayPendingAmount = todayBills.reduce((sum, bill) => sum + bill.pendingAmount, 0);
 
-  // Today's Appointments
-  const todayAppointments = appointments.filter(a => a.date === todayDate);
+  // Today's Appointments - Filter out completed ones
+  const todayAppointments = appointments.filter(a => a.date === todayDate && a.status !== "Completed");
 
   return (
     <div className="p-6 max-w-[1600px] mx-auto space-y-6">
@@ -303,6 +303,18 @@ export default function Dashboard() {
                                 </Badge>
                               </div>
                             )}
+                            {/* Schedule Appointment Button */}
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              className="h-6 text-xs px-2"
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                setSelectedPatientForAppointment(patient);
+                              }}
+                            >
+                              Schedule
+                            </Button>
                             {patientTodayBills.length > 0 ? (
                               <div className="text-sm">
                                 <span className="text-muted-foreground">Bills:</span>{" "}

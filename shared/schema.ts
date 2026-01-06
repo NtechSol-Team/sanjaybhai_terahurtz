@@ -118,6 +118,7 @@ export interface BillMedicineItem {
   medicineName: string;
   quantity: number;
   unitPrice: number;
+  discount?: number; // Percentage
   total: number;
 }
 
@@ -128,6 +129,7 @@ export interface BillTreatmentItem {
   price: number;
   // Dental-specific fields
   toothNumbers?: number[]; // Which teeth for this treatment
+  discount?: number; // Percentage
   gstPercentage?: number;
   gstAmount?: number;
   sittingId?: string; // Link to treatment sitting
@@ -143,6 +145,8 @@ export interface Bill {
   medicines: BillMedicineItem[];
   treatmentTotal: number;
   medicineTotal: number;
+  treatmentDiscount?: number; // Percentage
+  medicineDiscount?: number; // Percentage
   gstTotal: number; // Total GST amount
   grandTotal: number;
   amountPaid: number;
@@ -156,16 +160,20 @@ export const insertBillSchema = z.object({
     treatmentId: z.string(),
     treatmentName: z.string(),
     price: z.number(),
+    discount: z.number().min(0).max(100).optional().default(0),
   })),
   medicines: z.array(z.object({
     medicineId: z.string(),
     medicineName: z.string(),
     quantity: z.number().min(1),
     unitPrice: z.number().min(0),
+    discount: z.number().min(0).max(100).optional().default(0),
     total: z.number(),
   })),
   treatmentTotal: z.number(),
   medicineTotal: z.number(),
+  treatmentDiscount: z.number().min(0).max(100).optional(),
+  medicineDiscount: z.number().min(0).max(100).optional(),
   gstTotal: z.number().default(0),
   grandTotal: z.number(),
   amountPaid: z.number().min(0),

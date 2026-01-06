@@ -94,8 +94,8 @@ export default function BillingCreate() {
     mutationFn: async () => {
       if (!selectedPatient) throw new Error("Please select a patient");
 
-      const treatmentTotal = selectedTreatments.reduce((sum, t) => sum + t.price, 0);
-      const medicineTotal = selectedMedicines.reduce((sum, m) => sum + m.total, 0);
+      const treatmentTotal = selectedTreatments.reduce((sum, t) => sum + (t.price * (1 - (t.discount || 0) / 100)), 0);
+      const medicineTotal = selectedMedicines.reduce((sum, m) => sum + (m.total * (1 - (m.discount || 0) / 100)), 0);
       const grandTotal = treatmentTotal + medicineTotal;
       const paid = parseFloat(amountPaid) || 0;
 
@@ -106,6 +106,7 @@ export default function BillingCreate() {
         medicines: selectedMedicines,
         treatmentTotal,
         medicineTotal,
+        // Discounts are now per-item
         grandTotal,
         amountPaid: paid,
       });
@@ -148,6 +149,7 @@ export default function BillingCreate() {
           treatmentId: treatment.id,
           treatmentName: treatment.name,
           price: treatment.defaultPrice,
+          discount: 0,
         },
       ]);
     }
@@ -156,6 +158,12 @@ export default function BillingCreate() {
   const updateTreatmentPrice = (index: number, price: number) => {
     const updated = [...selectedTreatments];
     updated[index].price = price;
+    setSelectedTreatments(updated);
+  };
+
+  const updateTreatmentDiscount = (index: number, discount: number) => {
+    const updated = [...selectedTreatments];
+    updated[index].discount = Math.min(100, Math.max(0, discount));
     setSelectedTreatments(updated);
   };
 
@@ -171,6 +179,7 @@ export default function BillingCreate() {
         medicineName: "",
         quantity: 1,
         unitPrice: 0,
+        discount: 0,
         total: 0,
       },
     ]);
@@ -205,15 +214,33 @@ export default function BillingCreate() {
     setSelectedMedicines(updated);
   };
 
+  const updateMedicineDiscount = (index: number, discount: number) => {
+    const updated = [...selectedMedicines];
+    updated[index].discount = Math.min(100, Math.max(0, discount));
+    setSelectedMedicines(updated);
+  };
+
   const removeMedicine = (index: number) => {
     setSelectedMedicines(selectedMedicines.filter((_, i) => i !== index));
   };
 
-  const treatmentTotal = selectedTreatments.reduce((sum, t) => sum + t.price, 0);
-  const medicineTotal = selectedMedicines.reduce((sum, m) => sum + m.total, 0);
-  const grandTotal = treatmentTotal + medicineTotal;
+  // Calculate totals including itemized discounts
+  // Calculate totals including itemized discounts
+  // Treatment totals
+  const treatmentGross = selectedTreatments.reduce((sum, t) => sum + t.price, 0);
+  const treatmentDiscountAmount = selectedTreatments.reduce((sum, t) => sum + (t.price * (t.discount || 0) / 100), 0);
+  const treatmentNet = treatmentGross - treatmentDiscountAmount;
+
+  // Medicine totals
+  const medicineGross = selectedMedicines.reduce((sum, m) => sum + m.total, 0);
+  const medicineDiscountAmount = selectedMedicines.reduce((sum, m) => sum + (m.total * (m.discount || 0) / 100), 0);
+  const medicineNet = medicineGross - medicineDiscountAmount;
+
+  const totalDiscount = treatmentDiscountAmount + medicineDiscountAmount;
+  const grossTotal = treatmentGross + medicineGross;
+  const finalAmount = Math.round(treatmentNet + medicineNet);
   const paid = parseFloat(amountPaid) || 0;
-  const pendingAmount = grandTotal - paid;
+  const pendingAmount = finalAmount - paid;
 
   return (
     <div className="p-6 max-w-4xl mx-auto space-y-6">
@@ -347,7 +374,9 @@ export default function BillingCreate() {
                         <TableRow>
                           <TableHead className="w-[40%]">Treatment</TableHead>
                           <TableHead className="w-[30%]">Teeth</TableHead>
-                          <TableHead className="text-right">Price (₹)</TableHead>
+                          <TableHead className="text-right w-[15%]">Price (₹)</TableHead>
+                          <TableHead className="text-right w-[10%]">Disc %</TableHead>
+                          <TableHead className="text-right w-[15%]">Total (Net)</TableHead>
                           <TableHead className="w-[50px]"></TableHead>
                         </TableRow>
                       </TableHeader>
@@ -376,6 +405,26 @@ export default function BillingCreate() {
                                 onChange={(e) => updateTreatmentPrice(index, parseFloat(e.target.value) || 0)}
                                 className="h-8 w-24 ml-auto"
                               />
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Input
+                                type="number"
+                                min="0"
+                                max="100"
+                                value={treatment.discount || 0}
+                                onChange={(e) => updateTreatmentDiscount(index, parseFloat(e.target.value) || 0)}
+                                className="h-8 w-16 ml-auto"
+                              />
+                            </TableCell>
+                            <TableCell className="text-right font-medium">
+                              <div className="flex flex-col items-end leading-tight">
+                                <span>₹{(treatment.price * (1 - (treatment.discount || 0) / 100)).toFixed(2)}</span>
+                                {(treatment.discount || 0) > 0 && (
+                                  <span className="text-xs text-destructive whitespace-nowrap">
+                                    (-₹{(treatment.price * (treatment.discount || 0) / 100).toFixed(2)})
+                                  </span>
+                                )}
+                              </div>
                             </TableCell>
                             <TableCell>
                               <Button
@@ -442,7 +491,7 @@ export default function BillingCreate() {
                           </Button>
                         </div>
                         {med.medicineId && (
-                          <div className="grid grid-cols-3 gap-2">
+                          <div className="grid grid-cols-4 gap-2">
                             <div>
                               <label className="text-xs text-muted-foreground">Qty</label>
                               <Input
@@ -468,9 +517,27 @@ export default function BillingCreate() {
                               />
                             </div>
                             <div>
-                              <label className="text-xs text-muted-foreground">Total</label>
-                              <div className="h-8 flex items-center font-medium text-sm">
-                                ₹{med.total.toFixed(2)}
+                              <label className="text-xs text-muted-foreground">Disc %</label>
+                              <Input
+                                type="number"
+                                min="0"
+                                max="100"
+                                value={med.discount || 0}
+                                onChange={(e) =>
+                                  updateMedicineDiscount(index, parseFloat(e.target.value) || 0)
+                                }
+                                className="h-8"
+                              />
+                            </div>
+                            <div>
+                              <label className="text-xs text-muted-foreground">Total (Net)</label>
+                              <div className="h-8 flex flex-col justify-center font-medium text-sm leading-tight">
+                                <span>₹{(med.total * (1 - (med.discount || 0) / 100)).toFixed(2)}</span>
+                                {(med.discount || 0) > 0 && (
+                                  <span className="text-xs text-destructive">
+                                    (-₹{(med.total * (med.discount || 0) / 100).toFixed(2)})
+                                  </span>
+                                )}
                               </div>
                             </div>
                           </div>
@@ -483,17 +550,29 @@ export default function BillingCreate() {
 
               {/* Bill Summary */}
               <div className="border-t pt-4 space-y-3">
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Treatment Total</span>
-                  <span>₹{treatmentTotal.toFixed(2)}</span>
+                <div className="flex justify-between items-center text-sm">
+                  <span>Treatment Total</span>
+                  <span>₹{treatmentGross.toFixed(2)}</span>
                 </div>
-                <div className="flex justify-between text-sm">
-                  <span className="text-muted-foreground">Medicine Total</span>
-                  <span>₹{medicineTotal.toFixed(2)}</span>
+
+                <div className="flex justify-between items-center text-sm">
+                  <span>Medicine Total</span>
+                  <span>₹{medicineGross.toFixed(2)}</span>
                 </div>
+
+                <div className="flex justify-between items-center text-sm pt-1 border-t border-dashed font-medium">
+                  <span>Gross Total</span>
+                  <span>₹{grossTotal.toFixed(2)}</span>
+                </div>
+
+                <div className="flex justify-between items-center text-sm text-destructive">
+                  <span>Total Discount</span>
+                  <span>-₹{totalDiscount.toFixed(2)}</span>
+                </div>
+
                 <div className="flex justify-between font-semibold text-lg border-t pt-3">
-                  <span>Grand Total</span>
-                  <span>₹{grandTotal.toFixed(2)}</span>
+                  <span>Final Amount</span>
+                  <span>₹{finalAmount.toFixed(2)}</span>
                 </div>
               </div>
 
@@ -505,7 +584,7 @@ export default function BillingCreate() {
                     <Input
                       type="number"
                       min="0"
-                      max={grandTotal}
+                      max={finalAmount}
                       value={amountPaid}
                       onChange={(e) => setAmountPaid(e.target.value)}
                       placeholder="0"

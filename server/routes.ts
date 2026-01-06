@@ -17,13 +17,15 @@ import {
   updateTreatmentSittingSchema,
 } from "@shared/schema";
 import { z } from "zod";
+import { ensureAuthenticated } from "./auth";
 
 export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  // Authentication removed: login/logout/session endpoints and related session handling
-  // were removed intentionally. Authentication-related code used to live here.
+  // Authentication middleware
+  app.use("/api", ensureAuthenticated);
+
 
   // ==================== PATIENTS ====================
 
@@ -312,6 +314,9 @@ export async function registerRoutes(
       }
       res.status(204).send();
     } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Cannot delete treatment")) {
+        return res.status(400).json({ error: error.message });
+      }
       res.status(500).json({ error: "Failed to delete treatment" });
     }
   });
@@ -343,9 +348,30 @@ export async function registerRoutes(
     }
   });
 
+  // Helper to calculate grand total with discounts
+  const calculateBillTotals = (validated: {
+    treatmentTotal: number;
+    medicineTotal: number;
+    treatmentDiscount?: number;
+    medicineDiscount?: number;
+    gstTotal?: number;
+  }) => {
+    const treatmentDisc = validated.treatmentDiscount || 0;
+    const medicineDisc = validated.medicineDiscount || 0;
+
+    const treatmentNet = validated.treatmentTotal * (1 - treatmentDisc / 100);
+    const medicineNet = validated.medicineTotal * (1 - medicineDisc / 100);
+
+    const grandTotal = treatmentNet + medicineNet + (validated.gstTotal || 0);
+    return Math.round(grandTotal); // Rounded to nearest integet
+  };
+
   app.post("/api/bills", async (req, res) => {
     try {
       const validated = insertBillSchema.parse(req.body);
+
+      // Recalculate total with discounts to ensure server-side consistency
+      validated.grandTotal = calculateBillTotals(validated);
 
       // Get patient name
       const patient = await storage.getPatient(validated.patientId);
@@ -385,6 +411,9 @@ export async function registerRoutes(
   app.patch("/api/bills/:id", async (req, res) => {
     try {
       const validated = insertBillSchema.parse(req.body);
+
+      // Recalculate total with discounts
+      validated.grandTotal = calculateBillTotals(validated);
 
       // Get patient name
       const patient = await storage.getPatient(validated.patientId);
