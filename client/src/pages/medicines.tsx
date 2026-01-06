@@ -40,6 +40,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
   AlertDialog,
   AlertDialogAction,
   AlertDialogCancel,
@@ -51,7 +58,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useToast } from "@/hooks/use-toast";
 import type { Medicine } from "@shared/schema";
-import { insertMedicineSchema } from "@shared/schema";
+import { insertMedicineSchema, INVENTORY_CATEGORIES } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
 import { extractPaginatedData } from "@/lib/utils";
 import { z } from "zod";
@@ -80,6 +87,8 @@ export default function Medicines() {
       purchaseCost: 0,
       sellingPrice: 0,
       quantity: 0,
+      category: "Medicine",
+      expiryDate: "",
     },
   });
 
@@ -339,6 +348,46 @@ export default function Medicines() {
                         />
                       </div>
 
+                      <div className="grid grid-cols-2 gap-4">
+                        <FormField
+                          control={form.control}
+                          name="category"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Category</FormLabel>
+                              <Select onValueChange={field.onChange} defaultValue={field.value}>
+                                <FormControl>
+                                  <SelectTrigger>
+                                    <SelectValue placeholder="Select Category" />
+                                  </SelectTrigger>
+                                </FormControl>
+                                <SelectContent>
+                                  {INVENTORY_CATEGORIES.map((cat) => (
+                                    <SelectItem key={cat} value={cat}>
+                                      {cat}
+                                    </SelectItem>
+                                  ))}
+                                </SelectContent>
+                              </Select>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                        <FormField
+                          control={form.control}
+                          name="expiryDate"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Expiry Date</FormLabel>
+                              <FormControl>
+                                <Input type="date" {...field} value={field.value || ""} />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
+                      </div>
+
                       <FormField
                         control={form.control}
                         name="quantity"
@@ -371,8 +420,8 @@ export default function Medicines() {
                           {createMutation.isPending || updateMutation.isPending
                             ? "Saving..."
                             : editingMedicine
-                            ? "Update"
-                            : "Add Medicine"}
+                              ? "Update"
+                              : "Add Medicine"}
                         </Button>
                       </div>
                     </form>
@@ -405,6 +454,8 @@ export default function Medicines() {
                 <TableHeader>
                   <TableRow>
                     <TableHead>Medicine Name</TableHead>
+                    <TableHead>Category</TableHead>
+                    <TableHead>Expiry</TableHead>
                     <TableHead className="text-right">Purchase Cost</TableHead>
                     <TableHead className="text-right">Selling Price</TableHead>
                     <TableHead className="text-right">Margin</TableHead>
@@ -422,6 +473,10 @@ export default function Medicines() {
                     return (
                       <TableRow key={medicine.id} data-testid={`row-medicine-${medicine.id}`}>
                         <TableCell className="font-medium">{medicine.name}</TableCell>
+                        <TableCell>{medicine.category || "Medicine"}</TableCell>
+                        <TableCell>
+                          {medicine.expiryDate ? new Date(medicine.expiryDate).toLocaleDateString() : "-"}
+                        </TableCell>
                         <TableCell className="text-right">
                           ₹{medicine.purchaseCost.toFixed(2)}
                         </TableCell>

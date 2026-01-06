@@ -9,8 +9,12 @@ import {
   insertBillSchema,
   insertExpenseSchema,
   paymentAdjustmentSchema,
+  insertAppointmentSchema,
   paginationSchema,
-  // registerSchema, loginSchema removed with auth
+  // Dental-specific schemas
+  insertToothRecordSchema,
+  insertTreatmentSittingSchema,
+  updateTreatmentSittingSchema,
 } from "@shared/schema";
 import { z } from "zod";
 
@@ -22,7 +26,7 @@ export async function registerRoutes(
   // were removed intentionally. Authentication-related code used to live here.
 
   // ==================== PATIENTS ====================
-  
+
   app.get("/api/patients", async (req, res) => {
     try {
       const { limit, offset } = paginationSchema.parse(req.query);
@@ -79,8 +83,20 @@ export async function registerRoutes(
     }
   });
 
+  app.delete("/api/patients/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deletePatient(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: "Patient not found" });
+      }
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete patient" });
+    }
+  });
+
   // ==================== VISITS ====================
-  
+
   app.get("/api/visits", async (req, res) => {
     try {
       const visits = await storage.getVisits();
@@ -129,7 +145,7 @@ export async function registerRoutes(
   });
 
   // ==================== MEDICINES ====================
-  
+
   app.get("/api/medicines", async (req, res) => {
     try {
       const { limit, offset } = paginationSchema.parse(req.query);
@@ -197,17 +213,39 @@ export async function registerRoutes(
   });
 
   // ==================== TREATMENTS ====================
-  
+
+  // Seed common dental treatments
+  app.post("/api/treatments/seed", async (req, res) => {
+    try {
+      const { COMMON_DENTAL_TREATMENTS } = await import("@shared/schema");
+      let count = 0;
+      for (const t of COMMON_DENTAL_TREATMENTS) {
+        // Simple check to avoid duplicates by name
+        const existing = await storage.getTreatmentByName(t.name);
+        if (!existing) {
+          await storage.createTreatment(t);
+          count++;
+        }
+      }
+      res.json({ message: `Seeded ${count} new treatments.` });
+    } catch (error) {
+      console.error("Seeding error:", error);
+      res.status(500).json({ error: "Failed to seed treatments" });
+    }
+  });
+
   app.get("/api/treatments", async (req, res) => {
     try {
       const { limit, offset } = paginationSchema.parse(req.query);
       try {
         const { data, total } = await storage.getTreatmentsPaginated(limit, offset);
+        console.log("Treatments API response:", data.map(t => ({ id: t.id, name: t.name, numberOfSittings: t.numberOfSittings })));
         res.json({ data, total, limit, offset });
       } catch (paginationError) {
         // Fallback to non-paginated method
         console.error("Paginated query failed, using fallback:", paginationError);
         const allTreatments = await storage.getTreatments();
+        console.log("Treatments API response (fallback):", allTreatments.map(t => ({ id: t.id, name: t.name, numberOfSittings: t.numberOfSittings })));
         const data = allTreatments.slice(offset, offset + limit);
         const total = allTreatments.length;
         res.json({ data, total, limit, offset });
@@ -248,13 +286,17 @@ export async function registerRoutes(
 
   app.patch("/api/treatments/:id", async (req, res) => {
     try {
+      console.log("PATCH treatments/:id - Request body:", JSON.stringify(req.body, null, 2));
       const validated = insertTreatmentSchema.parse(req.body);
+      console.log("PATCH treatments/:id - Validated data:", JSON.stringify(validated, null, 2));
       const treatment = await storage.updateTreatment(req.params.id, validated);
+      console.log("PATCH treatments/:id - Updated treatment:", JSON.stringify(treatment, null, 2));
       if (!treatment) {
         return res.status(404).json({ error: "Treatment not found" });
       }
       res.json(treatment);
     } catch (error) {
+      console.error("PATCH treatments error:", error);
       if (error instanceof z.ZodError) {
         return res.status(400).json({ error: error.errors });
       }
@@ -275,7 +317,7 @@ export async function registerRoutes(
   });
 
   // ==================== BILLS ====================
-  
+
   app.get("/api/bills", async (req, res) => {
     try {
       const { limit, offset } = paginationSchema.parse(req.query);
@@ -304,13 +346,13 @@ export async function registerRoutes(
   app.post("/api/bills", async (req, res) => {
     try {
       const validated = insertBillSchema.parse(req.body);
-      
+
       // Get patient name
       const patient = await storage.getPatient(validated.patientId);
       if (!patient) {
         return res.status(400).json({ error: "Patient not found" });
       }
-      
+
       // Reduce medicine stock (only if medicines exist)
       if (validated.medicines && validated.medicines.length > 0) {
         for (const med of validated.medicines) {
@@ -320,15 +362,15 @@ export async function registerRoutes(
               return res.status(400).json({ error: `Medicine with ID ${med.medicineId} not found` });
             }
             if (medicine.quantity < med.quantity) {
-              return res.status(400).json({ 
-                error: `Insufficient stock for ${med.medicineName}. Available: ${medicine.quantity}, Required: ${med.quantity}` 
+              return res.status(400).json({
+                error: `Insufficient stock for ${med.medicineName}. Available: ${medicine.quantity}, Required: ${med.quantity}`
               });
             }
             await storage.updateMedicineStock(med.medicineId, -med.quantity);
           }
         }
       }
-      
+
       const bill = await storage.createBill(validated, patient.name);
       res.status(201).json(bill);
     } catch (error) {
@@ -343,13 +385,13 @@ export async function registerRoutes(
   app.patch("/api/bills/:id", async (req, res) => {
     try {
       const validated = insertBillSchema.parse(req.body);
-      
+
       // Get patient name
       const patient = await storage.getPatient(validated.patientId);
       if (!patient) {
         return res.status(400).json({ error: "Patient not found" });
       }
-      
+
       // Get existing bill to restore medicine stock
       const existingBill = await storage.getBill(req.params.id);
       if (existingBill) {
@@ -358,12 +400,12 @@ export async function registerRoutes(
           await storage.updateMedicineStock(med.medicineId, med.quantity);
         }
       }
-      
+
       // Reduce medicine stock for new bill
       for (const med of validated.medicines) {
         await storage.updateMedicineStock(med.medicineId, -med.quantity);
       }
-      
+
       const bill = await storage.updateBill(req.params.id, validated, patient.name);
       if (!bill) {
         return res.status(404).json({ error: "Bill not found" });
@@ -411,8 +453,8 @@ export async function registerRoutes(
         }
         newTotalPaid = currentBill.amountPaid + add;
         if (newTotalPaid > currentBill.grandTotal) {
-          return res.status(400).json({ 
-            error: `Cannot exceed bill amount. Remaining: ₹${(currentBill.grandTotal - currentBill.amountPaid).toFixed(2)}` 
+          return res.status(400).json({
+            error: `Cannot exceed bill amount. Remaining: ₹${(currentBill.grandTotal - currentBill.amountPaid).toFixed(2)}`
           });
         }
       }
@@ -455,7 +497,7 @@ export async function registerRoutes(
   });
 
   // ==================== EXPENSES ====================
-  
+
   app.get("/api/expenses", async (req, res) => {
     try {
       const { limit, offset } = paginationSchema.parse(req.query);
@@ -519,6 +561,237 @@ export async function registerRoutes(
       res.status(204).send();
     } catch (error) {
       res.status(500).json({ error: "Failed to delete expense" });
+    }
+  });
+
+  // ==================== APPOINTMENTS ====================
+
+  app.get("/api/appointments", async (req, res) => {
+    try {
+      const appointments = await storage.getAppointments();
+      res.json(appointments);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch appointments" });
+    }
+  });
+
+  app.get("/api/appointments/patient/:patientId", async (req, res) => {
+    try {
+      const appointments = await storage.getAppointmentsByPatient(req.params.patientId);
+      res.json(appointments);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch appointments" });
+    }
+  });
+
+  app.get("/api/appointments/:id", async (req, res) => {
+    try {
+      const appointment = await storage.getAppointment(req.params.id);
+      if (!appointment) {
+        return res.status(404).json({ error: "Appointment not found" });
+      }
+      res.json(appointment);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch appointment" });
+    }
+  });
+
+  app.post("/api/appointments", async (req, res) => {
+    try {
+      console.log("Creating appointment with body:", req.body);
+      const validated = insertAppointmentSchema.parse(req.body);
+      const appointment = await storage.createAppointment(validated);
+      res.status(201).json(appointment);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        console.log("Validation error:", JSON.stringify(error.errors));
+        return res.status(400).json({ error: error.errors });
+      }
+      res.status(500).json({ error: "Failed to create appointment" });
+    }
+  });
+
+  app.patch("/api/appointments/:id", async (req, res) => {
+    try {
+      const validated = insertAppointmentSchema.parse(req.body);
+      const appointment = await storage.updateAppointment(req.params.id, validated);
+      if (!appointment) {
+        return res.status(404).json({ error: "Appointment not found" });
+      }
+      res.json(appointment);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      res.status(500).json({ error: "Failed to update appointment" });
+    }
+  });
+
+  app.delete("/api/appointments/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deleteAppointment(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: "Appointment not found" });
+      }
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete appointment" });
+    }
+  });
+
+  // ==================== TOOTH RECORDS (Dental Chart) ====================
+
+  // Get all tooth records for a patient
+  app.get("/api/patients/:patientId/tooth-records", async (req, res) => {
+    try {
+      const records = await storage.getToothRecords(req.params.patientId);
+      res.json(records);
+    } catch (error) {
+      console.error("GET tooth-records error:", error);
+      res.status(500).json({ error: "Failed to fetch tooth records" });
+    }
+  });
+
+  // Get single tooth record
+  app.get("/api/tooth-records/:id", async (req, res) => {
+    try {
+      const record = await storage.getToothRecord(req.params.id);
+      if (!record) return res.status(404).json({ error: "Record not found" });
+      res.json(record);
+    } catch (error) {
+      console.error("GET tooth-record/:id error:", error);
+      res.status(500).json({ error: "Failed to fetch tooth record" });
+    }
+  });
+
+  // Create tooth record
+  app.post("/api/tooth-records", async (req, res) => {
+    try {
+      const record = insertToothRecordSchema.parse(req.body);
+      const created = await storage.createToothRecord(record);
+      res.json(created);
+    } catch (error) {
+      console.error("POST tooth-records error:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      res.status(500).json({ error: "Failed to create tooth record" });
+    }
+  });
+
+  // Update tooth record
+  app.patch("/api/tooth-records/:id", async (req, res) => {
+    try {
+      const validated = insertToothRecordSchema.parse(req.body);
+      const record = await storage.updateToothRecord(req.params.id, validated);
+      if (!record) {
+        return res.status(404).json({ error: "Tooth record not found" });
+      }
+      res.json(record);
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      res.status(500).json({ error: "Failed to update tooth record" });
+    }
+  });
+
+  // Delete tooth record
+  app.delete("/api/tooth-records/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deleteToothRecord(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: "Tooth record not found" });
+      }
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete tooth record" });
+    }
+  });
+
+  // ==================== TREATMENT SITTINGS (Multi-sitting workflow) ====================
+
+  // Get all treatment sittings for a patient
+  app.get("/api/patients/:patientId/treatment-sittings", async (req, res) => {
+    try {
+      const sittings = await storage.getTreatmentSittings(req.params.patientId);
+      res.json(sittings);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch treatment sittings" });
+    }
+  });
+
+  // Get pending sittings (for reports/dashboard)
+  app.get("/api/treatment-sittings/pending", async (req, res) => {
+    try {
+      const sittings = await storage.getPendingSittings();
+      res.json(sittings);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch pending sittings" });
+    }
+  });
+
+  // Get single treatment sitting
+  app.get("/api/treatment-sittings/:id", async (req, res) => {
+    try {
+      const sitting = await storage.getTreatmentSitting(req.params.id);
+      if (!sitting) {
+        return res.status(404).json({ error: "Treatment sitting not found" });
+      }
+      res.json(sitting);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch treatment sitting" });
+    }
+  });
+
+  // Create treatment sitting
+  app.post("/api/treatment-sittings", async (req, res) => {
+    try {
+      const validated = insertTreatmentSittingSchema.parse(req.body);
+      const sitting = await storage.createTreatmentSitting(validated);
+      res.status(201).json(sitting);
+    } catch (error) {
+      console.error("POST treatment-sittings error:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      res.status(500).json({ error: "Failed to create treatment sitting" });
+    }
+  });
+
+  // Update treatment sitting (for progress updates)
+  app.patch("/api/treatment-sittings/:id", async (req, res) => {
+    try {
+      console.log("PATCH treatment-sittings request body:", JSON.stringify(req.body, null, 2));
+      const validated = updateTreatmentSittingSchema.parse(req.body);
+      console.log("Validated data:", JSON.stringify(validated, null, 2));
+      const sitting = await storage.updateTreatmentSitting(req.params.id, validated);
+      if (!sitting) {
+        console.error("Treatment sitting not found for id:", req.params.id);
+        return res.status(404).json({ error: "Treatment sitting not found" });
+      }
+      console.log("Successfully updated sitting:", sitting.id);
+      res.json(sitting);
+    } catch (error) {
+      console.error("PATCH treatment-sittings error:", error);
+      if (error instanceof z.ZodError) {
+        console.error("Zod validation errors:", JSON.stringify(error.errors, null, 2));
+        return res.status(400).json({ error: error.errors });
+      }
+      res.status(500).json({ error: "Failed to update treatment sitting" });
+    }
+  });
+
+  // Delete treatment sitting
+  app.delete("/api/treatment-sittings/:id", async (req, res) => {
+    try {
+      const deleted = await storage.deleteTreatmentSitting(req.params.id);
+      if (!deleted) {
+        return res.status(404).json({ error: "Treatment sitting not found" });
+      }
+      res.status(204).send();
+    } catch (error) {
+      res.status(500).json({ error: "Failed to delete treatment sitting" });
     }
   });
 

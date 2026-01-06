@@ -70,14 +70,17 @@ type ExpenseForm = z.infer<typeof expenseFormSchema>;
 
 const EXPENSE_CATEGORIES = [
   "Rent",
-  "Medicine",
   "Salaries",
-  "Skin Products",
-  "Supplies",
-  "Maintenance",
+  "Dental Materials",
+  "Lab Fees",
+  "Equipment Maintenance",
+  "Dental Supplies",
+  "Utilities",
   "Marketing",
   "Insurance",
-  "Medicine Purchase",
+  "Software/Subscriptions",
+  "Professional Development",
+  "Office Supplies",
   "Other",
 ];
 
@@ -205,11 +208,11 @@ export default function Expenses() {
   const today = new Date();
   const monthStart = startOfMonth(today);
   const monthEnd = endOfMonth(today);
-  
+
   // Calculate date range based on filter
   let dateRangeStart = monthStart;
   let dateRangeEnd = monthEnd;
-  
+
   if (dateFilter === "current-month") {
     dateRangeStart = monthStart;
     dateRangeEnd = monthEnd;
@@ -487,8 +490,8 @@ export default function Expenses() {
                               {createMutation.isPending || updateMutation.isPending
                                 ? "Saving..."
                                 : editingExpense
-                                ? "Update"
-                                : "Add Expense"}
+                                  ? "Update"
+                                  : "Add Expense"}
                             </Button>
                           </div>
                         </form>

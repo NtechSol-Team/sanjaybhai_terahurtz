@@ -21,18 +21,30 @@ export const loginSchema = z.object({
 
 export type LoginInput = z.infer<typeof loginSchema>;
 
-// Patient Schema
+// Patient Schema - Extended for Dental Clinics
 export interface Patient {
   id: string;
   name: string;
   phone: string;
   registrationDate: string;
+  // Dental-specific fields (optional)
+  chiefDentalComplaint?: string;
+  dentalHistory?: string;
+  habitHistory?: string; // tobacco, gutkha, smoking
+  allergies?: string; // especially local anesthesia
+  lastDentalVisitDate?: string;
 }
 
 export const insertPatientSchema = z.object({
   name: z.string().min(1, "Patient name is required"),
   phone: z.string().min(10, "Phone number must be at least 10 digits"),
   registrationDate: z.string(),
+  // Optional dental fields
+  chiefDentalComplaint: z.string().optional(),
+  dentalHistory: z.string().optional(),
+  habitHistory: z.string().optional(),
+  allergies: z.string().optional(),
+  lastDentalVisitDate: z.string().optional(),
 });
 
 export type InsertPatient = z.infer<typeof insertPatientSchema>;
@@ -51,18 +63,21 @@ export const insertVisitSchema = z.object({
   patientId: z.string().min(1, "Patient ID is required"),
   date: z.string(),
   complaints: z.string().min(1, "Complaints are required"),
-  diagnosis: z.string().min(1, "Diagnosis is required"),
+  diagnosis: z.string().optional(),
 });
 
 export type InsertVisit = z.infer<typeof insertVisitSchema>;
 
-// Medicine Schema
+// Medicine Schema - Extended for Dental Inventory
 export interface Medicine {
   id: string;
   name: string;
   purchaseCost: number;
   sellingPrice: number;
   quantity: number;
+  // Dental-specific fields
+  category?: string; // "Dental Material", "Consumable", "Medicine"
+  expiryDate?: string;
 }
 
 export const insertMedicineSchema = z.object({
@@ -70,20 +85,29 @@ export const insertMedicineSchema = z.object({
   purchaseCost: z.number().min(0, "Purchase cost must be positive"),
   sellingPrice: z.number().min(0, "Selling price must be positive"),
   quantity: z.number().min(0, "Quantity must be positive"),
+  category: z.string().optional().default("Medicine"),
+  expiryDate: z.string().optional(),
 });
 
 export type InsertMedicine = z.infer<typeof insertMedicineSchema>;
 
-// Treatment Schema
+// Treatment Schema - Extended for Dental Procedures
 export interface Treatment {
   id: string;
   name: string;
   defaultPrice: number;
+  // Dental-specific fields
+  gstPercentage: number;
+  numberOfSittings: number;
+  category?: string; // "Preventive", "Restorative", "Surgical", "Orthodontic", "Prosthodontic"
 }
 
 export const insertTreatmentSchema = z.object({
   name: z.string().min(1, "Treatment name is required"),
   defaultPrice: z.number().min(0, "Price must be positive"),
+  gstPercentage: z.number().min(0).max(28).default(0),
+  numberOfSittings: z.number().min(0).optional().default(0),
+  category: z.string().optional(),
 });
 
 export type InsertTreatment = z.infer<typeof insertTreatmentSchema>;
@@ -97,14 +121,19 @@ export interface BillMedicineItem {
   total: number;
 }
 
-// Bill Item for treatments in a bill
+// Bill Item for treatments in a bill - Extended for Dental
 export interface BillTreatmentItem {
   treatmentId: string;
   treatmentName: string;
   price: number;
+  // Dental-specific fields
+  toothNumbers?: number[]; // Which teeth for this treatment
+  gstPercentage?: number;
+  gstAmount?: number;
+  sittingId?: string; // Link to treatment sitting
 }
 
-// Bill Schema
+// Bill Schema - Extended for Dental
 export interface Bill {
   id: string;
   patientId: string;
@@ -114,6 +143,7 @@ export interface Bill {
   medicines: BillMedicineItem[];
   treatmentTotal: number;
   medicineTotal: number;
+  gstTotal: number; // Total GST amount
   grandTotal: number;
   amountPaid: number;
   pendingAmount: number;
@@ -136,6 +166,7 @@ export const insertBillSchema = z.object({
   })),
   treatmentTotal: z.number(),
   medicineTotal: z.number(),
+  gstTotal: z.number().default(0),
   grandTotal: z.number(),
   amountPaid: z.number().min(0),
 });
@@ -205,3 +236,195 @@ export interface PaginatedResponse<T> {
   limit: number;
   offset: number;
 }
+
+// Appointment Schema
+export interface Appointment {
+  id: string;
+  patientId: string;
+  patientName?: string; // Optional, for display purposes
+  date: string;
+  reason: string;
+  status: string; // "Scheduled", "Completed", "Cancelled"
+  isUpcoming: boolean; // Computed or stored
+}
+
+export const insertAppointmentSchema = z.object({
+  patientId: z.string().min(1, "Patient ID is required"),
+  date: z.string(),
+  reason: z.string().optional().default(""),
+  status: z.enum(["Scheduled", "Completed", "Cancelled"]).default("Scheduled"),
+});
+
+export type InsertAppointment = z.infer<typeof insertAppointmentSchema>;
+
+// ==================== DENTAL-SPECIFIC ENTITIES ====================
+
+// Tooth Record for Dental Chart
+export interface ToothRecord {
+  id: string;
+  patientId: string;
+  toothNumber: number; // 1-32 (FDI notation can be mapped)
+  quadrant: string; // "UL", "UR", "LL", "LR"
+  condition: string; // "Healthy", "Caries", "Missing", "Filled", "Crown", "RootCanal"
+  notes?: string;
+  treatmentId?: string; // Link to treatment if applicable
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const TOOTH_CONDITIONS = [
+  "Healthy",
+  "Caries",
+  "Missing",
+  "Filled",
+  "Crown",
+  "RootCanal",
+] as const;
+
+export const QUADRANTS = ["UL", "UR", "LL", "LR"] as const;
+
+export const insertToothRecordSchema = z.object({
+  patientId: z.string().min(1, "Patient ID is required"),
+  toothNumber: z.number().min(1).max(99),
+  quadrant: z.enum(QUADRANTS),
+  condition: z.enum(TOOTH_CONDITIONS),
+  notes: z.string().optional(),
+  treatmentId: z.string().optional(),
+});
+
+export type InsertToothRecord = z.infer<typeof insertToothRecordSchema>;
+
+// Sitting Detail for multi-sitting treatments
+export interface SittingDetail {
+  sittingNumber: number;
+  date?: string;
+  status: "Planned" | "Completed" | "Skipped";
+  notes?: string;
+}
+
+// Treatment Sitting for multi-sitting workflow
+export interface TreatmentSitting {
+  id: string;
+  patientId: string;
+  treatmentId: string;
+  treatmentName: string;
+  billId?: string; // Link to bill when billed
+  toothNumbers: number[]; // Which teeth this treatment applies to
+  totalSittings: number;
+  completedSittings: number;
+  status: string; // "Planned", "InProgress", "Completed", "Cancelled"
+  sittingDetails: SittingDetail[];
+  startDate: string;
+  lastVisitDate?: string;
+  notes?: string;
+}
+
+export const SITTING_STATUSES = ["Planned", "InProgress", "Completed", "Cancelled"] as const;
+
+export const insertTreatmentSittingSchema = z.object({
+  patientId: z.string().min(1),
+  treatmentId: z.string().min(1),
+  treatmentName: z.string(),
+  billId: z.string().optional(),
+  toothNumbers: z.array(z.number()).default([]),
+  totalSittings: z.number().min(0),
+  completedSittings: z.number().default(0),
+  status: z.enum(SITTING_STATUSES).default("Planned"),
+  sittingDetails: z.array(z.object({
+    sittingNumber: z.number(),
+    date: z.string().optional(),
+    status: z.enum(["Planned", "Completed", "Skipped"]),
+    notes: z.string().optional(),
+  })).default([]),
+  startDate: z.string(),
+  lastVisitDate: z.string().optional(),
+  notes: z.string().optional(),
+});
+
+export type InsertTreatmentSitting = z.infer<typeof insertTreatmentSittingSchema>;
+
+// Update schema for PATCH operations - all fields optional
+export const updateTreatmentSittingSchema = z.object({
+  patientId: z.string().optional(),
+  treatmentId: z.string().optional(),
+  treatmentName: z.string().optional(),
+  billId: z.string().optional().nullable(),
+  toothNumbers: z.array(z.number()).optional(),
+  totalSittings: z.number().min(0).optional(),
+  completedSittings: z.number().optional(),
+  status: z.enum(SITTING_STATUSES).optional(),
+  sittingDetails: z.array(z.object({
+    sittingNumber: z.number(),
+    date: z.string().optional(),
+    status: z.enum(["Planned", "Completed", "Skipped"]),
+    notes: z.string().optional(),
+  })).optional(),
+  startDate: z.string().optional(),
+  lastVisitDate: z.string().optional().nullable(),
+  notes: z.string().optional().nullable(),
+});
+
+export type UpdateTreatmentSitting = z.infer<typeof updateTreatmentSittingSchema>;
+
+// Dental-specific constants
+export const DENTAL_TREATMENT_CATEGORIES = [
+  "Preventive",
+  "Restorative",
+  "Surgical",
+  "Orthodontic",
+  "Prosthodontic",
+  "Endodontic",
+  "Periodontic",
+  "Diagnostic",
+] as const;
+
+export const INVENTORY_CATEGORIES = [
+  "Medicine",
+  "Dental Material",
+  "Consumable",
+  "Impression Material",
+  "Equipment",
+] as const;
+
+export const CHIEF_DENTAL_COMPLAINTS = [
+  "Tooth pain",
+  "Sensitivity",
+  "Bleeding gums",
+  "Swelling",
+  "Bad breath",
+  "Broken tooth",
+  "Cavity",
+  "Loose tooth",
+  "Teeth cleaning",
+  "Cosmetic concern",
+  "Regular checkup",
+  "Other",
+] as const;
+
+export const HABIT_HISTORY_OPTIONS = [
+  "Tobacco chewing",
+  "Gutkha",
+  "Pan Masala",
+  "Smoking",
+  "Alcohol",
+  "Betel nut",
+  "None",
+] as const;
+
+export const COMMON_DENTAL_TREATMENTS = [
+  { name: "Consultation", defaultPrice: 500, gstPercentage: 0, numberOfSittings: 1, category: "Diagnostic" },
+  { name: "Scaling & Polishing", defaultPrice: 1500, gstPercentage: 0, numberOfSittings: 1, category: "Preventive" },
+  { name: "Root Canal Treatment (Anterior)", defaultPrice: 4000, gstPercentage: 0, numberOfSittings: 2, category: "Endodontic" },
+  { name: "Root Canal Treatment (Posterior)", defaultPrice: 6000, gstPercentage: 0, numberOfSittings: 3, category: "Endodontic" },
+  { name: "Composite Filling (Class I)", defaultPrice: 1200, gstPercentage: 0, numberOfSittings: 1, category: "Restorative" },
+  { name: "Composite Filling (Class II)", defaultPrice: 1800, gstPercentage: 0, numberOfSittings: 1, category: "Restorative" },
+  { name: "Extraction (Simple)", defaultPrice: 1000, gstPercentage: 0, numberOfSittings: 1, category: "Surgical" },
+  { name: "Extraction (Surgical)", defaultPrice: 3500, gstPercentage: 0, numberOfSittings: 2, category: "Surgical" },
+  { name: "Crown (PFM)", defaultPrice: 4500, gstPercentage: 0, numberOfSittings: 2, category: "Prosthodontic" },
+  { name: "Crown (Zirconia)", defaultPrice: 8000, gstPercentage: 0, numberOfSittings: 2, category: "Prosthodontic" },
+  { name: "Complete Denture", defaultPrice: 25000, gstPercentage: 0, numberOfSittings: 5, category: "Prosthodontic" },
+  { name: "Implant (Standard)", defaultPrice: 30000, gstPercentage: 18, numberOfSittings: 3, category: "Surgical" },
+  { name: "Orthodontic Treatment (Metal)", defaultPrice: 35000, gstPercentage: 0, numberOfSittings: 12, category: "Orthodontic" },
+  { name: "Orthodontic Treatment (Ceramic)", defaultPrice: 50000, gstPercentage: 0, numberOfSittings: 12, category: "Orthodontic" },
+  { name: "Bleaching (Office)", defaultPrice: 8000, gstPercentage: 18, numberOfSittings: 1, category: "Cosmetic" },
+] as const;

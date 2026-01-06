@@ -75,6 +75,9 @@ export default function Treatments() {
     defaultValues: {
       name: "",
       defaultPrice: 0,
+      gstPercentage: 0,
+      numberOfSittings: 0,
+      category: "",
     },
   });
 
@@ -147,6 +150,9 @@ export default function Treatments() {
     form.reset({
       name: "",
       defaultPrice: 0,
+      gstPercentage: 0,
+      numberOfSittings: 0,
+      category: "",
     });
   };
 
@@ -155,6 +161,9 @@ export default function Treatments() {
     form.reset({
       name: treatment.name,
       defaultPrice: treatment.defaultPrice,
+      gstPercentage: treatment.gstPercentage ?? 0,
+      numberOfSittings: treatment.numberOfSittings ?? 0,
+      category: treatment.category ?? "",
     });
     setIsDialogOpen(true);
   };
@@ -201,79 +210,148 @@ export default function Treatments() {
                   data-testid="input-treatment-search"
                 />
               </div>
-              <Dialog open={isDialogOpen} onOpenChange={(open) => !open && closeDialog()}>
-                <DialogTrigger asChild>
-                  <Button onClick={() => setIsDialogOpen(true)} data-testid="button-add-treatment">
-                    <Plus className="w-4 h-4 mr-2" />
-                    Add Treatment
-                  </Button>
-                </DialogTrigger>
-                <DialogContent>
-                  <DialogHeader>
-                    <DialogTitle>
-                      {editingTreatment ? "Edit Treatment" : "Add New Treatment"}
-                    </DialogTitle>
-                  </DialogHeader>
-                  <Form {...form}>
-                    <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
-                      <FormField
-                        control={form.control}
-                        name="name"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Treatment Name</FormLabel>
-                            <FormControl>
-                              <Input
-                                placeholder="Enter treatment name"
-                                {...field}
-                                data-testid="input-treatment-name"
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => apiRequest("POST", "/api/treatments/seed").then(() => {
+                    queryClient.invalidateQueries({ queryKey: ["/api/treatments"] });
+                    toast({ title: "Treatments Seeded", description: "Common dental treatments added." });
+                  })}
+                >
+                  Seed Defaults
+                </Button>
+                <Dialog open={isDialogOpen} onOpenChange={(open) => !open && closeDialog()}>
+                  <DialogTrigger asChild>
+                    <Button onClick={() => setIsDialogOpen(true)} data-testid="button-add-treatment">
+                      <Plus className="w-4 h-4 mr-2" />
+                      Add Treatment
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent>
+                    <DialogHeader>
+                      <DialogTitle>
+                        {editingTreatment ? "Edit Treatment" : "Add New Treatment"}
+                      </DialogTitle>
+                    </DialogHeader>
+                    <Form {...form}>
+                      <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-4">
+                        <FormField
+                          control={form.control}
+                          name="name"
+                          render={({ field }) => (
+                            <FormItem>
+                              <FormLabel>Treatment Name</FormLabel>
+                              <FormControl>
+                                <Input
+                                  placeholder="Enter treatment name"
+                                  {...field}
+                                  data-testid="input-treatment-name"
+                                />
+                              </FormControl>
+                              <FormMessage />
+                            </FormItem>
+                          )}
+                        />
 
-                      <FormField
-                        control={form.control}
-                        name="defaultPrice"
-                        render={({ field }) => (
-                          <FormItem>
-                            <FormLabel>Default Price (₹)</FormLabel>
-                            <FormControl>
-                              <Input
-                                type="number"
-                                placeholder="0"
-                                {...field}
-                                onChange={(e) => field.onChange(parseFloat(e.target.value) || 0)}
-                                data-testid="input-treatment-price"
-                              />
-                            </FormControl>
-                            <FormMessage />
-                          </FormItem>
-                        )}
-                      />
+                        <div className="grid grid-cols-2 gap-4">
+                          <FormField
+                            control={form.control}
+                            name="defaultPrice"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>Default Price (₹)</FormLabel>
+                                <FormControl>
+                                  <Input
+                                    type="number"
+                                    placeholder="0"
+                                    {...field}
+                                    onChange={(e) => field.onChange(parseFloat(e.target.value) || 0)}
+                                    data-testid="input-treatment-price"
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name="gstPercentage"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>GST (%)</FormLabel>
+                                <FormControl>
+                                  <Input
+                                    type="number"
+                                    placeholder="0"
+                                    {...field}
+                                    onChange={(e) => field.onChange(parseFloat(e.target.value) || 0)}
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        </div>
 
-                      <div className="flex justify-end gap-3 pt-2">
-                        <Button type="button" variant="outline" onClick={closeDialog}>
-                          Cancel
-                        </Button>
-                        <Button
-                          type="submit"
-                          disabled={createMutation.isPending || updateMutation.isPending}
-                          data-testid="button-save-treatment"
-                        >
-                          {createMutation.isPending || updateMutation.isPending
-                            ? "Saving..."
-                            : editingTreatment
-                            ? "Update"
-                            : "Add Treatment"}
-                        </Button>
-                      </div>
-                    </form>
-                  </Form>
-                </DialogContent>
-              </Dialog>
+                        <div className="grid grid-cols-2 gap-4">
+                          <FormField
+                            control={form.control}
+                            name="numberOfSittings"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>No. of Sittings</FormLabel>
+                                <FormControl>
+                                  <Input
+                                    type="number"
+                                    placeholder="0"
+                                    min={0}
+                                    {...field}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      field.onChange(val ? parseInt(val) : 0);
+                                    }}
+                                  />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                          <FormField
+                            control={form.control}
+                            name="category"
+                            render={({ field }) => (
+                              <FormItem>
+                                <FormLabel>Category</FormLabel>
+                                <FormControl>
+                                  <Input placeholder="e.g. Endo, Ortho" {...field} value={field.value || ""} />
+                                </FormControl>
+                                <FormMessage />
+                              </FormItem>
+                            )}
+                          />
+                        </div>
+
+                        <div className="flex justify-end gap-3 pt-2">
+                          <Button type="button" variant="outline" onClick={closeDialog}>
+                            Cancel
+                          </Button>
+                          <Button
+                            type="submit"
+                            disabled={createMutation.isPending || updateMutation.isPending}
+                            data-testid="button-save-treatment"
+                          >
+                            {createMutation.isPending || updateMutation.isPending
+                              ? "Saving..."
+                              : editingTreatment
+                                ? "Update"
+                                : "Add Treatment"}
+                          </Button>
+                        </div>
+                      </form>
+                    </Form>
+                  </DialogContent>
+                </Dialog>
+              </div>
             </div>
           </div>
         </CardHeader>
@@ -301,6 +379,7 @@ export default function Treatments() {
                   <TableRow>
                     <TableHead>Treatment Name</TableHead>
                     <TableHead className="text-right">Default Price</TableHead>
+                    <TableHead className="text-center">Sittings</TableHead>
                     <TableHead className="text-right">Actions</TableHead>
                   </TableRow>
                 </TableHeader>
@@ -310,6 +389,9 @@ export default function Treatments() {
                       <TableCell className="font-medium">{treatment.name}</TableCell>
                       <TableCell className="text-right">
                         ₹{treatment.defaultPrice.toFixed(2)}
+                      </TableCell>
+                      <TableCell className="text-center">
+                        {treatment.numberOfSittings}
                       </TableCell>
                       <TableCell className="text-right">
                         <div className="flex justify-end gap-1">

@@ -1,7 +1,10 @@
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
 import compression from "compression";
+import helmet from "helmet";
+import rateLimit from "express-rate-limit";
 import { registerRoutes } from "./routes";
+import { storage } from "./storage";
 import { serveStatic } from "./static";
 import { createServer } from "http";
 // session-based auth removed: express-session and connect-pg-simple imports removed
@@ -13,6 +16,21 @@ const app = express();
 if (process.env.NODE_ENV === "production") {
   app.set("trust proxy", 1);
 }
+
+// Security: HTTP headers
+app.use(helmet({
+  contentSecurityPolicy: process.env.NODE_ENV === "production" ? undefined : false,
+}));
+
+// Security: Rate limiting - 100 requests per 15 minutes per IP
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 100,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later." },
+});
+app.use("/api/", limiter);
 
 // Enable gzip compression for responses to reduce transfer size
 app.use(compression());
@@ -81,6 +99,7 @@ app.use((req, res, next) => {
 
 (async () => {
   try {
+    await storage.initialize();
     await registerRoutes(httpServer, app);
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   Receipt,
@@ -29,6 +29,14 @@ import type {
 import { apiRequest } from "@/lib/queryClient";
 import { extractPaginatedData } from "@/lib/utils";
 import { format } from "date-fns";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 
 export default function BillingCreate() {
   const { toast } = useToast();
@@ -45,6 +53,26 @@ export default function BillingCreate() {
     queryKey: ["/api/patients"],
   });
   const patients = extractPaginatedData<Patient>(patientsResponse);
+
+  // Handle patient pre-selection from URL or Session Storage and clear it
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    let patientId = params.get("patientId");
+
+    // Check session storage if not in URL
+    if (!patientId) {
+      patientId = sessionStorage.getItem("preselectedPatientId");
+    }
+
+    if (patientId && patients.length > 0 && !selectedPatient) {
+      const patient = patients.find(p => String(p.id) === patientId);
+      if (patient) {
+        setSelectedPatient(patient);
+        // Clear session storage to prevent persistence
+        sessionStorage.removeItem("preselectedPatientId");
+      }
+    }
+  }, [patients, selectedPatient]);
 
   const { data: medicinesResponse } = useQuery({
     queryKey: ["/api/medicines"],
@@ -90,6 +118,8 @@ export default function BillingCreate() {
         description: "Bill has been saved successfully.",
       });
       resetForm();
+      // Force page reload as requested
+      window.location.reload();
     },
     onError: (error: Error) => {
       toast({
@@ -312,33 +342,55 @@ export default function BillingCreate() {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    {selectedTreatments.map((treatment, index) => (
-                      <div
-                        key={index}
-                        className="flex items-center justify-between p-3 bg-muted/30 rounded-lg"
-                      >
-                        <span className="text-sm font-medium">{treatment.treatmentName}</span>
-                        <div className="flex items-center gap-3">
-                          <Input
-                            type="number"
-                            min="0"
-                            value={treatment.price}
-                            onChange={(e) =>
-                              updateTreatmentPrice(index, parseFloat(e.target.value) || 0)
-                            }
-                            className="h-8 w-24"
-                          />
-                          <Button
-                            variant="ghost"
-                            size="icon"
-                            className="h-7 w-7 text-destructive"
-                            onClick={() => removeTreatment(index)}
-                          >
-                            <Trash2 className="w-4 h-4" />
-                          </Button>
-                        </div>
-                      </div>
-                    ))}
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead className="w-[40%]">Treatment</TableHead>
+                          <TableHead className="w-[30%]">Teeth</TableHead>
+                          <TableHead className="text-right">Price (₹)</TableHead>
+                          <TableHead className="w-[50px]"></TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
+                        {selectedTreatments.map((treatment, index) => (
+                          <TableRow key={index}>
+                            <TableCell className="font-medium">{treatment.treatmentName}</TableCell>
+                            <TableCell>
+                              <Input
+                                placeholder="e.g. 18, 24"
+                                value={treatment.toothNumbers?.join(", ") || ""}
+                                onChange={(e) => {
+                                  const val = e.target.value;
+                                  const updated = [...selectedTreatments];
+                                  const numbers = val.split(",").map(s => parseInt(s.trim())).filter(n => !isNaN(n));
+                                  updated[index].toothNumbers = numbers;
+                                  setSelectedTreatments(updated);
+                                }}
+                              />
+                            </TableCell>
+                            <TableCell className="text-right">
+                              <Input
+                                type="number"
+                                min="0"
+                                value={treatment.price}
+                                onChange={(e) => updateTreatmentPrice(index, parseFloat(e.target.value) || 0)}
+                                className="h-8 w-24 ml-auto"
+                              />
+                            </TableCell>
+                            <TableCell>
+                              <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-destructive"
+                                onClick={() => removeTreatment(index)}
+                              >
+                                <Trash2 className="w-4 h-4" />
+                              </Button>
+                            </TableCell>
+                          </TableRow>
+                        ))}
+                      </TableBody>
+                    </Table>
                   </div>
                 )}
               </div>
@@ -496,6 +548,6 @@ export default function BillingCreate() {
           )}
         </CardContent>
       </Card>
-    </div>
+    </div >
   );
 }

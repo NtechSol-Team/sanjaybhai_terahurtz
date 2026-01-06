@@ -2,11 +2,12 @@ import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useLocation } from "wouter";
-import { UserPlus, Calendar, Phone, User, FileText, Stethoscope } from "lucide-react";
+import { UserPlus, Calendar, Phone, User, FileText, Stethoscope, Activity, AlertCircle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Form,
   FormControl,
@@ -14,19 +15,37 @@ import {
   FormItem,
   FormLabel,
   FormMessage,
+  FormDescription,
 } from "@/components/ui/form";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { useToast } from "@/hooks/use-toast";
-import { insertPatientSchema, insertVisitSchema, type InsertPatient } from "@shared/schema";
+import { insertPatientSchema, type InsertPatient, CHIEF_DENTAL_COMPLAINTS, HABIT_HISTORY_OPTIONS } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
 import { format } from "date-fns";
 import { z } from "zod";
 
 const registrationSchema = insertPatientSchema.extend({
-  complaints: z.string().min(1, "Complaints are required"),
-  diagnosis: z.string().min(1, "Diagnosis is required"),
+  // Dental specific fields from schema are already optional but we might want to enforce some logic here
+  chiefDentalComplaint: z.string().optional(),
+  dentalHistory: z.string().optional(),
+  habitHistory: z.string().optional(), // We'll handle this as a joined string from checkboxes
+  allergies: z.string().optional(),
+  lastDentalVisitDate: z.string().optional(),
+  // Visit specific
+  complaints: z.string().optional(), // General complaints
+  diagnosis: z.string().optional(),
+  selectedHabits: z.array(z.string()).optional(),
 });
 
-type RegistrationForm = z.infer<typeof registrationSchema>;
+type RegistrationForm = z.infer<typeof registrationSchema> & {
+  selectedHabits: string[]; // Helper for UI
+};
 
 export default function Registration() {
   const [, setLocation] = useLocation();
@@ -41,27 +60,43 @@ export default function Registration() {
       registrationDate: format(new Date(), "yyyy-MM-dd"),
       complaints: "",
       diagnosis: "",
+      chiefDentalComplaint: "",
+      dentalHistory: "",
+      habitHistory: "",
+      selectedHabits: [],
+      allergies: "",
+      lastDentalVisitDate: "",
     },
   });
 
   const mutation = useMutation({
     mutationFn: async (data: RegistrationForm) => {
+      // transform selectedHabits to comma-separated string if habitHistory is empty
+      const selectedHabits = data.selectedHabits || [];
+      const habitString = selectedHabits.length > 0 ? selectedHabits.join(", ") : data.habitHistory;
+
       const patientData: InsertPatient = {
         name: data.name,
         phone: data.phone,
         registrationDate: data.registrationDate,
+        chiefDentalComplaint: data.chiefDentalComplaint || undefined,
+        dentalHistory: data.dentalHistory || undefined,
+        habitHistory: habitString || undefined,
+        allergies: data.allergies || undefined,
+        lastDentalVisitDate: data.lastDentalVisitDate || undefined,
       };
-      
+
       const patientResponse = await apiRequest("POST", "/api/patients", patientData);
       const patient = await patientResponse.json();
-      
+
+      // Create initial visit
       await apiRequest("POST", "/api/visits", {
         patientId: patient.id,
         date: data.registrationDate,
-        complaints: data.complaints,
+        complaints: data.chiefDentalComplaint || data.complaints || "Initial Registration", // Priority to dental complaint
         diagnosis: data.diagnosis,
       });
-      
+
       return patient;
     },
     onSuccess: (patient) => {
@@ -87,46 +122,104 @@ export default function Registration() {
   };
 
   return (
-    <div className="p-6 max-w-3xl mx-auto space-y-6">
+    <div className="p-6 max-w-4xl mx-auto space-y-6">
       <div className="flex flex-col gap-2">
         <h1 className="text-2xl font-semibold tracking-tight" data-testid="text-page-title">
           New Patient Registration
         </h1>
         <p className="text-muted-foreground">
-          Register a new patient with their initial visit details
+          Register a new patient with their dental history and initial details
         </p>
       </div>
 
-      <Card>
-        <CardHeader>
-          <CardTitle className="flex items-center gap-2 text-lg">
-            <UserPlus className="w-5 h-5 text-primary" />
-            Patient Information
-          </CardTitle>
-          <CardDescription>
-            Enter the patient's personal and medical details for registration
-          </CardDescription>
-        </CardHeader>
-        <CardContent>
-          <Form {...form}>
-            <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+      <Form {...form}>
+        <form onSubmit={form.handleSubmit(onSubmit)} className="space-y-6">
+
+          {/* PERSONAL INFO */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <UserPlus className="w-5 h-5 text-primary" />
+                Personal Information
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="grid gap-6 md:grid-cols-2">
+              <FormField
+                control={form.control}
+                name="name"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Patient Name <span className="text-red-500">*</span></FormLabel>
+                    <FormControl>
+                      <Input placeholder="Enter full name" {...field} data-testid="input-patient-name" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="phone"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Phone Number <span className="text-red-500">*</span></FormLabel>
+                    <FormControl>
+                      <Input placeholder="10-digit number" type="tel" {...field} data-testid="input-patient-phone" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="registrationDate"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Registration Date</FormLabel>
+                    <FormControl>
+                      <Input type="date" {...field} data-testid="input-registration-date" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+            </CardContent>
+          </Card>
+
+          {/* DENTAL HISTORY */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Activity className="w-5 h-5 text-primary" />
+                Dental & Medical History
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-6">
+
               <div className="grid gap-6 md:grid-cols-2">
                 <FormField
                   control={form.control}
-                  name="name"
+                  name="chiefDentalComplaint"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel className="flex items-center gap-2">
-                        <User className="w-4 h-4" />
-                        Patient Name
-                      </FormLabel>
-                      <FormControl>
-                        <Input
-                          placeholder="Enter full name"
-                          {...field}
-                          data-testid="input-patient-name"
-                        />
-                      </FormControl>
+                      <FormLabel>Chief Complaint</FormLabel>
+                      <Select onValueChange={field.onChange} defaultValue={field.value}>
+                        <FormControl>
+                          <SelectTrigger>
+                            <SelectValue placeholder="Select primary complaint" />
+                          </SelectTrigger>
+                        </FormControl>
+                        <SelectContent>
+                          {CHIEF_DENTAL_COMPLAINTS.map((complaint) => (
+                            <SelectItem key={complaint} value={complaint}>
+                              {complaint}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                      <FormDescription>Main reason for visiting</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -134,41 +227,12 @@ export default function Registration() {
 
                 <FormField
                   control={form.control}
-                  name="phone"
+                  name="lastDentalVisitDate"
                   render={({ field }) => (
                     <FormItem>
-                      <FormLabel className="flex items-center gap-2">
-                        <Phone className="w-4 h-4" />
-                        Phone Number
-                      </FormLabel>
+                      <FormLabel>Last Dental Visit</FormLabel>
                       <FormControl>
-                        <Input
-                          placeholder="Enter phone number"
-                          type="tel"
-                          {...field}
-                          data-testid="input-patient-phone"
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="registrationDate"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel className="flex items-center gap-2">
-                        <Calendar className="w-4 h-4" />
-                        Registration Date
-                      </FormLabel>
-                      <FormControl>
-                        <Input
-                          type="date"
-                          {...field}
-                          data-testid="input-registration-date"
-                        />
+                        <Input type="date" {...field} value={field.value || ''} />
                       </FormControl>
                       <FormMessage />
                     </FormItem>
@@ -176,80 +240,140 @@ export default function Registration() {
                 />
               </div>
 
-              <div className="border-t pt-6">
-                <h3 className="font-medium mb-4 flex items-center gap-2">
-                  <Stethoscope className="w-4 h-4 text-primary" />
-                  Initial Visit Details
-                </h3>
-                
-                <div className="space-y-6">
-                  <FormField
-                    control={form.control}
-                    name="complaints"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel className="flex items-center gap-2">
-                          <FileText className="w-4 h-4" />
-                          Complaints
-                        </FormLabel>
-                        <FormControl>
-                          <Textarea
-                            placeholder="Enter patient's complaints..."
-                            className="min-h-[100px] resize-none"
-                            {...field}
-                            data-testid="input-complaints"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+              <FormField
+                control={form.control}
+                name="dentalHistory"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel>Past Dental History</FormLabel>
+                    <FormControl>
+                      <Textarea
+                        placeholder="Previous treatments (RCT, Extractions, etc.)..."
+                        className="resize-none"
+                        {...field}
+                        value={field.value || ""}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
 
-                  <FormField
-                    control={form.control}
-                    name="diagnosis"
-                    render={({ field }) => (
-                      <FormItem>
-                        <FormLabel className="flex items-center gap-2">
-                          <Stethoscope className="w-4 h-4" />
-                          Diagnosis
-                        </FormLabel>
-                        <FormControl>
-                          <Textarea
-                            placeholder="Enter diagnosis..."
-                            className="min-h-[100px] resize-none"
-                            {...field}
-                            data-testid="input-diagnosis"
-                          />
-                        </FormControl>
-                        <FormMessage />
-                      </FormItem>
-                    )}
-                  />
+              <FormField
+                control={form.control}
+                name="allergies"
+                render={({ field }) => (
+                  <FormItem>
+                    <FormLabel className="flex items-center gap-2 text-red-600">
+                      <AlertCircle className="w-4 h-4" />
+                      Allergies & Medical Conditions
+                    </FormLabel>
+                    <FormControl>
+                      <Textarea
+                        placeholder="Drug allergies (Local Anesthesia, Antibiotics), BP, Diabetes..."
+                        className="resize-none border-red-200 focus-visible:ring-red-500"
+                        {...field}
+                        value={field.value || ""}
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <div className="space-y-3">
+                <FormLabel>Habits</FormLabel>
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                  {HABIT_HISTORY_OPTIONS.map((habit) => (
+                    <FormField
+                      key={habit}
+                      control={form.control}
+                      name="selectedHabits"
+                      render={({ field }) => {
+                        return (
+                          <FormItem
+                            key={habit}
+                            className="flex flex-row items-start space-x-3 space-y-0"
+                          >
+                            <FormControl>
+                              <Checkbox
+                                checked={field.value?.includes(habit)}
+                                onCheckedChange={(checked) => {
+                                  return checked
+                                    ? field.onChange([...field.value, habit])
+                                    : field.onChange(
+                                      field.value?.filter(
+                                        (value) => value !== habit
+                                      )
+                                    )
+                                }}
+                              />
+                            </FormControl>
+                            <FormLabel className="font-normal cursor-pointer">
+                              {habit}
+                            </FormLabel>
+                          </FormItem>
+                        )
+                      }}
+                    />
+                  ))}
                 </div>
               </div>
 
-              <div className="flex justify-end gap-3 pt-4 border-t">
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => setLocation("/")}
-                  data-testid="button-cancel"
-                >
-                  Cancel
-                </Button>
-                <Button
-                  type="submit"
-                  disabled={mutation.isPending}
-                  data-testid="button-register"
-                >
-                  {mutation.isPending ? "Registering..." : "Register Patient"}
-                </Button>
+            </CardContent>
+          </Card>
+
+          {/* INITIAL VISIT */}
+          <Card>
+            <CardHeader>
+              <CardTitle className="flex items-center gap-2 text-lg">
+                <Stethoscope className="w-5 h-5 text-primary" />
+                Initial Assessment
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid gap-6">
+                <FormField
+                  control={form.control}
+                  name="diagnosis"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Provisional Diagnosis</FormLabel>
+                      <FormControl>
+                        <Textarea
+                          placeholder="Initial diagnosis based on examination..."
+                          className="min-h-[100px] resize-none"
+                          {...field}
+                        />
+                      </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
               </div>
-            </form>
-          </Form>
-        </CardContent>
-      </Card>
+            </CardContent>
+          </Card>
+
+          <div className="flex justify-end gap-3">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setLocation("/")}
+              data-testid="button-cancel"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              disabled={mutation.isPending}
+              data-testid="button-register"
+              className="px-8"
+            >
+              {mutation.isPending ? "Registering..." : "Register Patient"}
+            </Button>
+          </div>
+        </form>
+      </Form>
     </div>
   );
 }
