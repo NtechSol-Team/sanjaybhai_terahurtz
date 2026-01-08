@@ -380,20 +380,34 @@ export async function registerRoutes(
       }
 
       // Reduce medicine stock (only if medicines exist)
+      // Reduce medicine stock (only if medicines exist)
       if (validated.medicines && validated.medicines.length > 0) {
-        for (const med of validated.medicines) {
-          if (med.medicineId) {
-            const medicine = await storage.getMedicine(med.medicineId);
-            if (!medicine) {
-              return res.status(400).json({ error: `Medicine with ID ${med.medicineId} not found` });
+        const medIds = validated.medicines
+          .map((m) => m.medicineId)
+          .filter((id): id is string => !!id);
+
+        if (medIds.length > 0) {
+          const medicines = await storage.getMedicinesByIds(medIds);
+          const medMap = new Map(medicines.map((m) => [m.id, m]));
+          const updates: { id: string; quantityChange: number }[] = [];
+
+          for (const med of validated.medicines) {
+            if (med.medicineId) {
+              const medicine = medMap.get(med.medicineId);
+              if (!medicine) {
+                return res
+                  .status(400)
+                  .json({ error: `Medicine with ID ${med.medicineId} not found` });
+              }
+              if (medicine.quantity < med.quantity) {
+                return res.status(400).json({
+                  error: `Insufficient stock for ${med.medicineName}. Available: ${medicine.quantity}, Required: ${med.quantity}`,
+                });
+              }
+              updates.push({ id: med.medicineId, quantityChange: -med.quantity });
             }
-            if (medicine.quantity < med.quantity) {
-              return res.status(400).json({
-                error: `Insufficient stock for ${med.medicineName}. Available: ${medicine.quantity}, Required: ${med.quantity}`
-              });
-            }
-            await storage.updateMedicineStock(med.medicineId, -med.quantity);
           }
+          await storage.updateMedicineStocksBulk(updates);
         }
       }
 
@@ -421,18 +435,67 @@ export async function registerRoutes(
         return res.status(400).json({ error: "Patient not found" });
       }
 
-      // Get existing bill to restore medicine stock
+      // Get existing bill to restore and update stock
       const existingBill = await storage.getBill(req.params.id);
-      if (existingBill) {
-        // Restore medicine stock from old bill
+
+      const stockChanges = new Map<string, number>();
+
+      // 1. Calculate restoration (add back old quantities)
+      if (existingBill && existingBill.medicines) {
         for (const med of existingBill.medicines) {
-          await storage.updateMedicineStock(med.medicineId, med.quantity);
+          if (med.medicineId) {
+            const current = stockChanges.get(med.medicineId) || 0;
+            stockChanges.set(med.medicineId, current + med.quantity);
+          }
         }
       }
 
-      // Reduce medicine stock for new bill
-      for (const med of validated.medicines) {
-        await storage.updateMedicineStock(med.medicineId, -med.quantity);
+      // 2. Calculate consumption (subtract new quantities)
+      if (validated.medicines) {
+        for (const med of validated.medicines) {
+          if (med.medicineId) {
+            const current = stockChanges.get(med.medicineId) || 0;
+            stockChanges.set(med.medicineId, current - med.quantity);
+          }
+        }
+      }
+
+      // 3. Process changes
+      if (stockChanges.size > 0) {
+        const medIds = Array.from(stockChanges.keys());
+        const medicines = await storage.getMedicinesByIds(medIds);
+        const medMap = new Map(medicines.map((m) => [m.id, m]));
+        const updates: { id: string; quantityChange: number }[] = [];
+
+        for (const [id, change] of Array.from(stockChanges)) {
+          // If change is 0, no update needed
+          if (change === 0) continue;
+
+          const medicine = medMap.get(id);
+          if (!medicine) {
+            // If medicine was deleted but we are trying to restore stock, we might just ignore it 
+            // or error. safer to error if we are consuming, but if restoring maybe fine?
+            // But here we are just validating sufficient stock if change is negative.
+            if (change < 0) {
+              return res.status(400).json({ error: `Medicine with ID ${id} not found` });
+            }
+            // If we are adding stock to a deleted medicine, we can't. 
+            // Ideally we should warn or ignore. I'll ignore if not found for restoration, 
+            // but strictly error for consumption of non-existent.
+            continue;
+          }
+
+          if (change < 0 && medicine.quantity + change < 0) {
+            return res.status(400).json({
+              error: `Insufficient stock for ${medicine.name}. Available: ${medicine.quantity}, Net Change: ${change}`
+            });
+          }
+          updates.push({ id, quantityChange: change });
+        }
+
+        if (updates.length > 0) {
+          await storage.updateMedicineStocksBulk(updates);
+        }
       }
 
       const bill = await storage.updateBill(req.params.id, validated, patient.name);
@@ -507,10 +570,17 @@ export async function registerRoutes(
 
       // Restore medicine stock for deleted bill
       const medicines = Array.isArray(bill.medicines) ? bill.medicines : [];
+
+      const updates: { id: string; quantityChange: number }[] = [];
+
       for (const med of medicines) {
         if (med && med.medicineId && med.quantity) {
-          await storage.updateMedicineStock(med.medicineId, med.quantity);
+          updates.push({ id: med.medicineId, quantityChange: med.quantity });
         }
+      }
+
+      if (updates.length > 0) {
+        await storage.updateMedicineStocksBulk(updates);
       }
 
       const deleted = await storage.deleteBill(req.params.id);

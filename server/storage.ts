@@ -59,6 +59,8 @@ export interface IStorage {
   updateMedicine(id: string, medicine: InsertMedicine): Promise<Medicine | undefined>;
   deleteMedicine(id: string): Promise<boolean>;
   updateMedicineStock(id: string, quantity: number): Promise<Medicine | undefined>;
+  updateMedicineStocksBulk(updates: { id: string; quantityChange: number }[]): Promise<void>;
+  getMedicinesByIds(ids: string[]): Promise<Medicine[]>;
 
   // Treatments
   getTreatments(): Promise<Treatment[]>;
@@ -1100,6 +1102,69 @@ export class PostgresStorage implements IStorage {
       this.cache.invalidate(`medicine:${medicine.id} `);
     }
     return medicine;
+  }
+
+  async updateMedicineStocksBulk(updates: { id: string; quantityChange: number }[]): Promise<void> {
+    if (updates.length === 0) return;
+    await this.waitForReady();
+
+    const client = await pool.connect();
+    try {
+      await client.query("BEGIN");
+
+      // We can use a temporary table or a series of updates. 
+      // For simplicity and compatibility, we'll use a series of updates within a transaction.
+      // Since it's a single transaction, it's atomic.
+      // To improve speed, we can perform them in parallel promises since we are inside a transaction?
+      // No, node-postgres client is single-stream. We must await them or use Promise.all but they will be serialized on the wire.
+
+      // Better approach: Update with data items
+      // "UPDATE medicines as m SET quantity = GREATEST(0, m.quantity + v.change) FROM (VALUES ...) as v(id, change) WHERE m.id = v.id::bigint" (if numeric)
+
+      const values = updates.map(u => `(${this.convertId("medicines", u.id)}, ${u.quantityChange})`).join(",");
+      // Cast to correct types in VALUES clause
+      const query = `
+        UPDATE medicines as m 
+        SET quantity = GREATEST(0, m.quantity + v.change) 
+        FROM (VALUES ${values}) as v(id, change) 
+        WHERE m.id = v.id${this.usesNumericId("medicines") ? "" : "::text"}
+      `;
+
+      await client.query(query);
+      await client.query("COMMIT");
+
+      // Invalidate cache once
+      this.cache.invalidate("medicines");
+      for (const u of updates) {
+        this.cache.invalidate(`medicine:${normalizeId(u.id)} `);
+      }
+    } catch (e) {
+      await client.query("ROLLBACK");
+      throw e;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getMedicinesByIds(ids: string[]): Promise<Medicine[]> {
+    if (ids.length === 0) return [];
+    await this.waitForReady();
+
+    // We can't rely on cache for mixed hits/misses easily without logic. 
+    // And usually this is for validation where fresh data is preferred.
+    // So we fetch specific IDs.
+
+    // Convert IDs
+    const dbIds = ids.map(id => this.convertId("medicines", id));
+
+    const { rows } = await pool.query<DbMedicineRow>(
+      `SELECT id, name, purchase_cost, selling_price, quantity, category, expiry_date 
+       FROM medicines 
+       WHERE id = ANY($1)`,
+      [dbIds]
+    );
+
+    return rows.map(mapMedicine);
   }
 
   // Treatments

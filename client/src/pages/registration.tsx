@@ -245,7 +245,7 @@ export default function Registration() {
                 name="dentalHistory"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Past Dental History</FormLabel>
+                    <FormLabel>Past Dental History (Optional)</FormLabel>
                     <FormControl>
                       <Textarea
                         placeholder="Previous treatments (RCT, Extractions, etc.)..."
@@ -264,9 +264,9 @@ export default function Registration() {
                 name="allergies"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel className="flex items-center gap-2 text-red-600">
-                      <AlertCircle className="w-4 h-4" />
-                      Allergies & Medical Conditions
+                    <FormLabel className="flex items-center gap-2">
+                      <AlertCircle className="w-4 h-4 text-muted-foreground" />
+                      Allergies & Medical Conditions (Optional)
                     </FormLabel>
                     <FormControl>
                       <Textarea
