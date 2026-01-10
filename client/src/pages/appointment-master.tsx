@@ -12,7 +12,8 @@ import {
     Clock,
     CheckCircle2,
     XCircle,
-    AlertCircle
+    AlertCircle,
+    MessageCircle,
 } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -59,6 +60,12 @@ import {
     AlertDialogHeader,
     AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+    Tooltip,
+    TooltipContent,
+    TooltipProvider,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { useToast } from "@/hooks/use-toast";
 import type { Appointment, Patient } from "@shared/schema";
 import { extractPaginatedData } from "@/lib/utils";
@@ -84,8 +91,14 @@ export default function AppointmentMaster() {
     // Since api returns array directly based on my implementation
     const appointments = Array.isArray(appointmentsResponse) ? appointmentsResponse : [];
 
+    // Fetch all patients for selection dropdowns
     const { data: patientsResponse, isLoading: patientsLoading } = useQuery({
-        queryKey: ["/api/patients"],
+        queryKey: ["/api/patients", { limit: 10000 }],
+        queryFn: async () => {
+            const res = await fetch("/api/patients?limit=10000");
+            if (!res.ok) throw new Error("Failed to fetch patients");
+            return res.json();
+        },
     });
     const patients = extractPaginatedData<Patient>(patientsResponse);
 
@@ -227,6 +240,55 @@ export default function AppointmentMaster() {
             default:
                 return <Badge variant="outline">{status}</Badge>;
         }
+    };
+
+    // WhatsApp message generation and sending
+    const sendWhatsAppMessage = (appointment: Appointment, patient: Patient | undefined) => {
+        if (!patient?.phone) {
+            toast({
+                title: "Phone number missing",
+                description: "Cannot send WhatsApp message - patient phone number is not available.",
+                variant: "destructive",
+            });
+            return;
+        }
+
+        // Clean phone number (remove spaces, dashes) and add India country code
+        const cleanPhone = patient.phone.replace(/[\s-]/g, "");
+        const phoneWithCountryCode = cleanPhone.startsWith("91") ? cleanPhone : `91${cleanPhone}`;
+
+        // Format date nicely
+        const formattedDate = format(new Date(appointment.date), "dd MMMM yyyy");
+
+        // Clinic settings (configurable defaults)
+        const clinicName = "Dent Care Clinic"; // TODO: Make configurable from system settings
+        const arriveMinutes = 10; // TODO: Make configurable
+
+        // Generate message
+        const message = `Hello ${patient.name},
+
+Your appointment has been confirmed for ${formattedDate} at ${clinicName}.
+Please arrive ${arriveMinutes} minutes early.
+
+Reason: ${appointment.reason || "General Checkup"}
+
+We look forward to seeing you!
+
+Warm regards,
+${clinicName}`;
+
+        // URL encode the message and create wa.me link
+        const encodedMessage = encodeURIComponent(message);
+        const whatsappUrl = `https://wa.me/${phoneWithCountryCode}?text=${encodedMessage}`;
+
+        // Open in new tab without page reload
+        window.open(whatsappUrl, "_blank", "noopener,noreferrer");
+    };
+
+    // Helper to get patient phone for an appointment
+    const getPatientPhone = (appointment: Appointment): string | undefined => {
+        const patient = patients.find(p => p.id === appointment.patientId);
+        return patient?.phone;
     };
 
     return (
@@ -468,6 +530,24 @@ export default function AppointmentMaster() {
                                             <TableCell>{getStatusBadge(appt.status)}</TableCell>
                                             <TableCell className="text-right">
                                                 <div className="flex justify-end gap-1">
+                                                    <TooltipProvider>
+                                                        <Tooltip>
+                                                            <TooltipTrigger asChild>
+                                                                <Button
+                                                                    variant="ghost"
+                                                                    size="icon"
+                                                                    className="text-green-600 hover:text-green-700 hover:bg-green-50"
+                                                                    onClick={() => sendWhatsAppMessage(appt, patients.find(p => p.id === appt.patientId))}
+                                                                    disabled={!getPatientPhone(appt)}
+                                                                >
+                                                                    <MessageCircle className="w-4 h-4" />
+                                                                </Button>
+                                                            </TooltipTrigger>
+                                                            <TooltipContent>
+                                                                <p>{getPatientPhone(appt) ? "Send WhatsApp Message" : "Phone number missing"}</p>
+                                                            </TooltipContent>
+                                                        </Tooltip>
+                                                    </TooltipProvider>
                                                     <Button
                                                         variant="ghost"
                                                         size="icon"

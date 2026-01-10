@@ -93,20 +93,24 @@ export default function Registration() {
       await apiRequest("POST", "/api/visits", {
         patientId: patient.id,
         date: data.registrationDate,
-        complaints: data.chiefDentalComplaint || data.complaints || "Initial Registration", // Priority to dental complaint
+        complaints: data.complaints || "Initial Registration",
         diagnosis: data.diagnosis,
       });
 
       return patient;
     },
     onSuccess: (patient) => {
-      queryClient.invalidateQueries({ queryKey: ["/api/patients"] });
-      queryClient.invalidateQueries({ queryKey: ["/api/visits"] });
       toast({
         title: "Patient Registered",
         description: `${patient.name} has been successfully registered.`,
       });
-      setLocation("/");
+      // Wait for queries to refetch before navigating so Today's Patients updates immediately
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/patients"], refetchType: 'all' }),
+        queryClient.invalidateQueries({ queryKey: ["/api/visits"], refetchType: 'all' }),
+      ]).then(() => {
+        setLocation("/");
+      });
     },
     onError: (error: Error) => {
       toast({
@@ -180,6 +184,44 @@ export default function Registration() {
                     <FormLabel>Registration Date</FormLabel>
                     <FormControl>
                       <Input type="date" {...field} data-testid="input-registration-date" />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="complaints"
+                render={({ field }) => (
+                  <FormItem className="md:col-span-2">
+                    <FormLabel>Complaints</FormLabel>
+                    <FormControl>
+                      <Textarea
+                        placeholder="Enter patient's complaints..."
+                        className="min-h-[80px] resize-none"
+                        {...field}
+                        data-testid="input-complaints"
+                      />
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                )}
+              />
+
+              <FormField
+                control={form.control}
+                name="diagnosis"
+                render={({ field }) => (
+                  <FormItem className="md:col-span-2">
+                    <FormLabel>Diagnosis</FormLabel>
+                    <FormControl>
+                      <Textarea
+                        placeholder="Enter diagnosis..."
+                        className="min-h-[80px] resize-none"
+                        {...field}
+                        data-testid="input-diagnosis"
+                      />
                     </FormControl>
                     <FormMessage />
                   </FormItem>
@@ -320,37 +362,6 @@ export default function Registration() {
                 </div>
               </div>
 
-            </CardContent>
-          </Card>
-
-          {/* INITIAL VISIT */}
-          <Card>
-            <CardHeader>
-              <CardTitle className="flex items-center gap-2 text-lg">
-                <Stethoscope className="w-5 h-5 text-primary" />
-                Initial Assessment
-              </CardTitle>
-            </CardHeader>
-            <CardContent>
-              <div className="grid gap-6">
-                <FormField
-                  control={form.control}
-                  name="diagnosis"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Provisional Diagnosis</FormLabel>
-                      <FormControl>
-                        <Textarea
-                          placeholder="Initial diagnosis based on examination..."
-                          className="min-h-[100px] resize-none"
-                          {...field}
-                        />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
             </CardContent>
           </Card>
 

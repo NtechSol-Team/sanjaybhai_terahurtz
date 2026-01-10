@@ -63,9 +63,6 @@ export function TreatmentProgress({ patientId }: TreatmentProgressProps) {
     });
     const treatments = extractPaginatedData<Treatment>(treatmentsRaw);
 
-    // Debug: log treatments to see numberOfSittings values
-    console.log("Treatments data:", treatments.map(t => ({ id: t.id, name: t.name, numberOfSittings: t.numberOfSittings })));
-
     // Fetch active treatment sittings
     const { data: sittings = [], isLoading } = useQuery<TreatmentSitting[]>({
         queryKey: ["/api/patients", patientId, "treatment-sittings"],

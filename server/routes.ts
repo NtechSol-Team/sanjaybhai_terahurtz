@@ -1,3 +1,19 @@
+/**
+ * API Routes for Dental Clinic Management System
+ * 
+ * This file contains all REST API endpoints for:
+ * - Patients (CRUD + pagination + search)
+ * - Visits (patient visit history)
+ * - Medicines (inventory management)
+ * - Treatments (treatment catalog)
+ * - Bills (billing with medicine stock deduction)
+ * - Expenses (clinic expense tracking)
+ * - Appointments (scheduling)
+ * - Dental records (tooth-specific data, treatment sittings)
+ * 
+ * All endpoints are protected by authentication middleware.
+ */
+
 import type { Express } from "express";
 import { createServer, type Server } from "http";
 import { storage } from "./storage";
@@ -23,17 +39,63 @@ export async function registerRoutes(
   httpServer: Server,
   app: Express
 ): Promise<Server> {
-  // Authentication middleware
+  // Authentication middleware - protects all /api/* endpoints
   app.use("/api", ensureAuthenticated);
 
 
   // ==================== PATIENTS ====================
 
+  /**
+   * GET /api/dashboard-summary
+   * 
+   * Returns aggregated statistics for the dashboard in a single API call.
+   * This reduces the number of API calls needed to load the dashboard.
+   * 
+   * Response: { totalPatients: number, todaysPatients: number }
+   */
+  app.get("/api/dashboard-summary", async (req, res) => {
+    try {
+      const [patientsCount, todaysPatientsCount] = await Promise.all([
+        storage.getPatientsCount(),
+        storage.getTodaysPatientsCount(),
+      ]);
+      res.json({
+        totalPatients: patientsCount,
+        todaysPatients: todaysPatientsCount,
+      });
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch dashboard summary" });
+    }
+  });
+
+  /**
+   * GET /api/patients
+   * 
+   * Server-side paginated patient list with optional search.
+   * 
+   * Query Parameters:
+   *   - page (default: 1): Page number (1-indexed)
+   *   - limit (default: 20): Number of records per page
+   *   - search (optional): Search term for name/phone (case-insensitive)
+   * 
+   * SQL Logic:
+   *   SELECT * FROM patients 
+   *   WHERE name ILIKE '%search%' OR phone ILIKE '%search%'
+   *   ORDER BY registration_date DESC
+   *   LIMIT :limit OFFSET (:page - 1) * :limit
+   * 
+   * Response: { data: Patient[], total: number, page: number, limit: number }
+   */
   app.get("/api/patients", async (req, res) => {
     try {
-      const { limit, offset } = paginationSchema.parse(req.query);
-      const { data, total } = await storage.getPatientsPaginated(limit, offset);
-      res.json({ data, total, limit, offset });
+      // Parse pagination parameters from query string
+      const page = parseInt(req.query.page as string) || 1;
+      const limit = parseInt(req.query.limit as string) || 20;
+      const search = req.query.search as string | undefined;
+
+      // Fetch paginated results from database
+      const result = await storage.getPatientsPaginated(page, limit, search);
+      res.json(result);
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ error: error.errors });
@@ -241,13 +303,10 @@ export async function registerRoutes(
       const { limit, offset } = paginationSchema.parse(req.query);
       try {
         const { data, total } = await storage.getTreatmentsPaginated(limit, offset);
-        console.log("Treatments API response:", data.map(t => ({ id: t.id, name: t.name, numberOfSittings: t.numberOfSittings })));
         res.json({ data, total, limit, offset });
       } catch (paginationError) {
         // Fallback to non-paginated method
-        console.error("Paginated query failed, using fallback:", paginationError);
         const allTreatments = await storage.getTreatments();
-        console.log("Treatments API response (fallback):", allTreatments.map(t => ({ id: t.id, name: t.name, numberOfSittings: t.numberOfSittings })));
         const data = allTreatments.slice(offset, offset + limit);
         const total = allTreatments.length;
         res.json({ data, total, limit, offset });
@@ -288,17 +347,13 @@ export async function registerRoutes(
 
   app.patch("/api/treatments/:id", async (req, res) => {
     try {
-      console.log("PATCH treatments/:id - Request body:", JSON.stringify(req.body, null, 2));
       const validated = insertTreatmentSchema.parse(req.body);
-      console.log("PATCH treatments/:id - Validated data:", JSON.stringify(validated, null, 2));
       const treatment = await storage.updateTreatment(req.params.id, validated);
-      console.log("PATCH treatments/:id - Updated treatment:", JSON.stringify(treatment, null, 2));
       if (!treatment) {
         return res.status(404).json({ error: "Treatment not found" });
       }
       res.json(treatment);
     } catch (error) {
-      console.error("PATCH treatments error:", error);
       if (error instanceof z.ZodError) {
         return res.status(400).json({ error: error.errors });
       }
@@ -348,7 +403,14 @@ export async function registerRoutes(
     }
   });
 
-  // Helper to calculate grand total with discounts
+  /**
+   * Helper function to calculate bill grand total with discounts
+   * 
+   * Formula:
+   *   treatmentNet = treatmentTotal * (1 - treatmentDiscount/100)
+   *   medicineNet = medicineTotal * (1 - medicineDiscount/100)
+   *   grandTotal = ROUND(treatmentNet + medicineNet + GST)
+   */
   const calculateBillTotals = (validated: {
     treatmentTotal: number;
     medicineTotal: number;
@@ -363,9 +425,28 @@ export async function registerRoutes(
     const medicineNet = validated.medicineTotal * (1 - medicineDisc / 100);
 
     const grandTotal = treatmentNet + medicineNet + (validated.gstTotal || 0);
-    return Math.round(grandTotal); // Rounded to nearest integet
+    return Math.round(grandTotal);
   };
 
+  /**
+   * POST /api/bills
+   * 
+   * Creates a new bill and handles medicine stock management.
+   * 
+   * Business Logic:
+   * 1. Validate bill data using Zod schema
+   * 2. Recalculate grand total server-side for security
+   * 3. Verify patient exists
+   * 4. For each medicine in bill:
+   *    - Check if sufficient stock exists
+   *    - Deduct quantity from inventory using bulk update
+   * 5. Create bill record with patient name denormalized
+   * 
+   * Stock Management:
+   *   UPDATE medicines SET quantity = quantity - :billQty WHERE id = :medicineId
+   * 
+   * Rollback: If bill creation fails after stock deduction, manual intervention required
+   */
   app.post("/api/bills", async (req, res) => {
     try {
       const validated = insertBillSchema.parse(req.body);
@@ -373,24 +454,31 @@ export async function registerRoutes(
       // Recalculate total with discounts to ensure server-side consistency
       validated.grandTotal = calculateBillTotals(validated);
 
-      // Get patient name
+      // Get patient name for denormalization in bill record
       const patient = await storage.getPatient(validated.patientId);
       if (!patient) {
         return res.status(400).json({ error: "Patient not found" });
       }
 
-      // Reduce medicine stock (only if medicines exist)
-      // Reduce medicine stock (only if medicines exist)
+      /**
+       * Medicine Stock Deduction Logic:
+       * 1. Extract all medicine IDs from the bill
+       * 2. Fetch current stock for all medicines in one query
+       * 3. Validate each medicine has sufficient stock
+       * 4. Apply all stock changes in a single bulk update
+       */
       if (validated.medicines && validated.medicines.length > 0) {
         const medIds = validated.medicines
           .map((m) => m.medicineId)
           .filter((id): id is string => !!id);
 
         if (medIds.length > 0) {
+          // Fetch all medicines in one query for efficiency
           const medicines = await storage.getMedicinesByIds(medIds);
           const medMap = new Map(medicines.map((m) => [m.id, m]));
           const updates: { id: string; quantityChange: number }[] = [];
 
+          // Validate stock availability for each medicine
           for (const med of validated.medicines) {
             if (med.medicineId) {
               const medicine = medMap.get(med.medicineId);
@@ -404,9 +492,11 @@ export async function registerRoutes(
                   error: `Insufficient stock for ${med.medicineName}. Available: ${medicine.quantity}, Required: ${med.quantity}`,
                 });
               }
+              // Prepare stock deduction (negative change)
               updates.push({ id: med.medicineId, quantityChange: -med.quantity });
             }
           }
+          // Apply all stock changes in one bulk operation
           await storage.updateMedicineStocksBulk(updates);
         }
       }
@@ -417,7 +507,6 @@ export async function registerRoutes(
       if (error instanceof z.ZodError) {
         return res.status(400).json({ error: error.errors });
       }
-      console.error("Error creating bill:", error);
       res.status(500).json({ error: "Failed to create bill", details: error instanceof Error ? error.message : String(error) });
     }
   });
@@ -697,13 +786,11 @@ export async function registerRoutes(
 
   app.post("/api/appointments", async (req, res) => {
     try {
-      console.log("Creating appointment with body:", req.body);
       const validated = insertAppointmentSchema.parse(req.body);
       const appointment = await storage.createAppointment(validated);
       res.status(201).json(appointment);
     } catch (error) {
       if (error instanceof z.ZodError) {
-        console.log("Validation error:", JSON.stringify(error.errors));
         return res.status(400).json({ error: error.errors });
       }
       res.status(500).json({ error: "Failed to create appointment" });
@@ -861,20 +948,14 @@ export async function registerRoutes(
   // Update treatment sitting (for progress updates)
   app.patch("/api/treatment-sittings/:id", async (req, res) => {
     try {
-      console.log("PATCH treatment-sittings request body:", JSON.stringify(req.body, null, 2));
       const validated = updateTreatmentSittingSchema.parse(req.body);
-      console.log("Validated data:", JSON.stringify(validated, null, 2));
       const sitting = await storage.updateTreatmentSitting(req.params.id, validated);
       if (!sitting) {
-        console.error("Treatment sitting not found for id:", req.params.id);
         return res.status(404).json({ error: "Treatment sitting not found" });
       }
-      console.log("Successfully updated sitting:", sitting.id);
       res.json(sitting);
     } catch (error) {
-      console.error("PATCH treatment-sittings error:", error);
       if (error instanceof z.ZodError) {
-        console.error("Zod validation errors:", JSON.stringify(error.errors, null, 2));
         return res.status(400).json({ error: error.errors });
       }
       res.status(500).json({ error: "Failed to update treatment sitting" });

@@ -1,3 +1,25 @@
+/**
+ * PostgreSQL Storage Layer for Dental Clinic Management System
+ * 
+ * This file provides the data access layer with methods for:
+ * - CRUD operations for all entities (patients, visits, medicines, etc.)
+ * - Server-side pagination with search
+ * - Bulk operations for performance (e.g., stock updates)
+ * - Database schema migrations and table setup
+ * 
+ * Architecture:
+ * - Uses 'pg' library with connection pooling
+ * - In-memory caching with 60-second TTL for frequently accessed data
+ * - Parameterized queries to prevent SQL injection
+ * - Optimistic locking for concurrent updates
+ * 
+ * Connection Pool Settings:
+ * - min: 2 (warm connections to avoid cold starts)
+ * - max: 10 (maximum concurrent connections)
+ * - idleTimeoutMillis: 30000 (close idle after 30s)
+ * - connectionTimeoutMillis: 10000 (fail fast)
+ */
+
 import {
   type Patient,
   type InsertPatient,
@@ -26,21 +48,38 @@ import {
 import { randomUUID } from "crypto";
 import { Pool } from "pg";
 
+// Database connection string from environment variable
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) {
   throw new Error("DATABASE_URL is required");
 }
 
+/**
+ * PostgreSQL Connection Pool Configuration
+ * 
+ * Optimized for a typical clinic workload:
+ * - 2 minimum connections kept warm for instant queries
+ * - 10 maximum for handling concurrent users during busy hours
+ * - Auto-cleanup of idle connections to reduce database load
+ */
 const pool = new Pool({
   connectionString,
   ssl: {
     rejectUnauthorized: false,
   },
+  min: 2,                    // Keep 2 connections warm to avoid cold starts
+  max: 10,                   // Maximum connections for concurrent requests
+  idleTimeoutMillis: 30000,  // Close idle connections after 30s
+  connectionTimeoutMillis: 10000, // Fail fast if can't connect in 10s
 });
 
 export interface IStorage {
+  // Pagination result type
   // Patients
   getPatients(): Promise<Patient[]>;
+  getPatientsPaginated(page: number, limit: number, search?: string): Promise<{ data: Patient[]; total: number; page: number; limit: number }>;
+  getPatientsCount(): Promise<number>;
+  getTodaysPatientsCount(): Promise<number>;
   getPatient(id: string): Promise<Patient | undefined>;
   createPatient(patient: InsertPatient): Promise<Patient>;
   updatePatient(id: string, patient: InsertPatient): Promise<Patient | undefined>;
@@ -580,7 +619,7 @@ export class PostgresStorage implements IStorage {
     tooth_records: "text",
     treatment_sittings: "text",
   };
-  private cache = new DataCache(5_000);
+  private cache = new DataCache(60_000); // 60 second cache TTL for better performance
 
   constructor() {
     this.ready = (async () => {
@@ -1585,24 +1624,101 @@ export class PostgresStorage implements IStorage {
 
   // ==================== PAGINATION METHODS ====================
 
+  /**
+   * Get paginated patients with optional search
+   * 
+   * SQL Pattern:
+   *   -- Count query (for pagination info)
+   *   SELECT COUNT(*) FROM patients WHERE name ILIKE '%search%' OR phone ILIKE '%search%'
+   *   
+   *   -- Data query (for current page)
+   *   SELECT * FROM patients 
+   *   WHERE name ILIKE '%search%' OR phone ILIKE '%search%'
+   *   ORDER BY registration_date DESC
+   *   LIMIT 20 OFFSET 40  -- Page 3, 20 items per page
+   * 
+   * @param page - Page number (1-indexed)
+   * @param limit - Number of records per page (default: 20)
+   * @param search - Optional search term for name/phone (case-insensitive)
+   * @returns { data: Patient[], total: number, page: number, limit: number }
+   */
   async getPatientsPaginated(
-    limit: number = 50,
-    offset: number = 0
-  ): Promise<{ data: Patient[]; total: number }> {
+    page: number = 1,
+    limit: number = 20,
+    search?: string
+  ): Promise<{ data: Patient[]; total: number; page: number; limit: number }> {
     await this.waitForReady();
-    const { rows: countResult } = await pool.query<{ count: string }>(
-      "SELECT COUNT(*) as count FROM patients"
-    );
+
+    // Calculate offset: page 1 = offset 0, page 2 = offset 20, etc.
+    const offset = (page - 1) * limit;
+
+    // Build WHERE clause dynamically based on search parameter
+    let whereClause = "";
+    const params: (string | number)[] = [];
+
+    if (search && search.trim()) {
+      // ILIKE for case-insensitive search in PostgreSQL
+      whereClause = "WHERE name ILIKE $1 OR phone ILIKE $1";
+      params.push(`%${search.trim()}%`);
+    }
+
+    // First query: Get total count for pagination info
+    const countQuery = `SELECT COUNT(*) as count FROM patients ${whereClause}`;
+    const { rows: countResult } = await pool.query<{ count: string }>(countQuery, params);
     const total = parseInt(countResult[0]?.count || "0", 10);
 
+    // Second query: Get paginated data with dynamic parameter positions
+    const dataParams = search && search.trim()
+      ? [`%${search.trim()}%`, limit, offset]
+      : [limit, offset];
+    const limitParam = search && search.trim() ? "$2" : "$1";
+    const offsetParam = search && search.trim() ? "$3" : "$2";
+
     const { rows } = await pool.query<DbPatientRow>(
-      `SELECT id, name, phone, registration_date FROM patients 
+      `SELECT id, name, phone, registration_date, chief_dental_complaint, dental_history, 
+              habit_history, allergies, last_dental_visit_date 
+       FROM patients ${whereClause}
        ORDER BY registration_date DESC 
-       LIMIT $1 OFFSET $2`,
-      [limit, offset]
+       LIMIT ${limitParam} OFFSET ${offsetParam}`,
+      dataParams
     );
     const data = rows.map(mapPatient);
-    return { data, total };
+    return { data, total, page, limit };
+  }
+
+  /**
+   * Get total patient count (cached for 60 seconds)
+   * 
+   * SQL: SELECT COUNT(*) FROM patients
+   */
+  async getPatientsCount(): Promise<number> {
+    await this.waitForReady();
+    const cacheKey = "patients:count";
+    const cached = this.cache.get<number>(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const { rows } = await pool.query<{ count: string }>("SELECT COUNT(*) as count FROM patients");
+    const count = parseInt(rows[0]?.count || "0", 10);
+    this.cache.set(cacheKey, count);
+    return count;
+  }
+
+  async getTodaysPatientsCount(): Promise<number> {
+    await this.waitForReady();
+    const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
+    const cacheKey = `patients:today:${today}`;
+    const cached = this.cache.get<number>(cacheKey);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const { rows } = await pool.query<{ count: string }>(
+      "SELECT COUNT(*) as count FROM patients WHERE registration_date = $1",
+      [today]
+    );
+    const count = parseInt(rows[0]?.count || "0", 10);
+    this.cache.set(cacheKey, count);
+    return count;
   }
 
   async getMedicinesPaginated(

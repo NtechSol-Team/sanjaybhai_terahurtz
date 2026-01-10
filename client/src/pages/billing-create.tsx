@@ -49,8 +49,14 @@ export default function BillingCreate() {
   const [selectedMedicines, setSelectedMedicines] = useState<BillMedicineItem[]>([]);
   const [amountPaid, setAmountPaid] = useState("");
 
+  // Fetch all patients for search and selection
   const { data: patientsResponse, isLoading: patientsLoading } = useQuery({
-    queryKey: ["/api/patients"],
+    queryKey: ["/api/patients", { limit: 10000 }],
+    queryFn: async () => {
+      const res = await fetch("/api/patients?limit=10000");
+      if (!res.ok) throw new Error("Failed to fetch patients");
+      return res.json();
+    },
   });
   const patients = extractPaginatedData<Patient>(patientsResponse);
 

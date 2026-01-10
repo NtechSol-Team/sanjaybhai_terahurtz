@@ -1,7 +1,7 @@
 import { useState, useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Link, useLocation } from "wouter";
-import { Search, Users, Calendar, TrendingUp, AlertCircle, ChevronRight, Phone } from "lucide-react";
+import { Search, Users, Calendar, TrendingUp, AlertCircle, ChevronRight, ChevronLeft, Phone } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -25,10 +25,22 @@ type AppointmentForm = z.infer<typeof insertAppointmentSchema>;
 
 export default function Dashboard() {
   const [searchQuery, setSearchQuery] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [currentPage, setCurrentPage] = useState(1);
+  const PATIENTS_PER_PAGE = 20;
   const [, setLocation] = useLocation();
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const [selectedPatientForAppointment, setSelectedPatientForAppointment] = useState<Patient | null>(null);
+
+  // Debounce search input - wait 300ms after user stops typing
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearch(searchQuery);
+      setCurrentPage(1); // Reset to page 1 when search changes
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const form = useForm<AppointmentForm>({
     resolver: zodResolver(insertAppointmentSchema),
@@ -69,10 +81,40 @@ export default function Dashboard() {
     },
   });
 
-  const { data: patientsResponse, isLoading: patientsLoading } = useQuery({
-    queryKey: ["/api/patients"],
+  // Server-side pagination - fetches only current page's data
+  const { data: patientsResponse, isLoading: patientsLoading, isFetching: patientsFetching } = useQuery({
+    queryKey: ["/api/patients", { page: currentPage, limit: PATIENTS_PER_PAGE, search: debouncedSearch }],
+    queryFn: async () => {
+      const params = new URLSearchParams({
+        page: currentPage.toString(),
+        limit: PATIENTS_PER_PAGE.toString(),
+      });
+      if (debouncedSearch) {
+        params.set("search", debouncedSearch);
+      }
+      const res = await fetch(`/api/patients?${params.toString()}`);
+      if (!res.ok) throw new Error("Failed to fetch patients");
+      return res.json();
+    },
+    placeholderData: (previousData) => previousData, // Keep previous data while loading
   });
-  const patients = extractPaginatedData<Patient>(patientsResponse);
+
+  // Extract patients and total from server response
+  const patients = patientsResponse?.data || [];
+  const totalPatients = patientsResponse?.total || 0;
+  const totalPages = Math.ceil(totalPatients / PATIENTS_PER_PAGE);
+
+  // Fetch ALL patients for Today's Patients calculation (separate query)
+  const { data: allPatientsResponse } = useQuery({
+    queryKey: ["/api/patients", { limit: 10000, forTodayCalc: true }],
+    queryFn: async () => {
+      const res = await fetch("/api/patients?limit=10000");
+      if (!res.ok) throw new Error("Failed to fetch patients");
+      return res.json();
+    },
+    staleTime: 60000, // Cache for 1 minute
+  });
+  const allPatients = allPatientsResponse?.data || [];
 
   const { data: billsResponse } = useQuery({
     queryKey: ["/api/bills"],
@@ -89,12 +131,6 @@ export default function Dashboard() {
   });
   const appointments = Array.isArray(appointmentsResponse) ? appointmentsResponse : [];
 
-  const filteredPatients = patients.filter(
-    (patient) =>
-      patient.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      patient.phone.includes(searchQuery)
-  );
-
   const pendingBills = bills.filter((bill) => bill.pendingAmount > 0);
 
   // Get today's date string
@@ -107,9 +143,9 @@ export default function Dashboard() {
       .map((v) => v.patientId)
   );
 
-  // Include patients registered today OR with visits today
-  const todayPatients = patients.filter(
-    (p) => p.registrationDate === todayDate || patientIdsWithTodayVisits.has(p.id)
+  // Include patients registered today OR with visits today (use allPatients for this calculation)
+  const todayPatients = allPatients.filter(
+    (p: Patient) => p.registrationDate === todayDate || patientIdsWithTodayVisits.has(p.id)
   );
 
   const totalRevenue = bills.reduce((sum, bill) => sum + bill.grandTotal, 0);
@@ -252,7 +288,7 @@ export default function Dashboard() {
           </CardHeader>
           <CardContent>
             <div className="space-y-2">
-              {todayPatients.map((patient) => {
+              {todayPatients.map((patient: Patient) => {
                 const patientTodayBills = bills.filter(
                   (b) =>
                     b.patientId === patient.id &&
@@ -286,11 +322,6 @@ export default function Dashboard() {
                             <Phone className="w-3 h-3" />
                             {patient.phone}
                           </div>
-                          {patientTodayVisits.length > 0 && (
-                            <div className="text-xs text-blue-600 mt-1">
-                              Visit: {patientTodayVisits[0].diagnosis}
-                            </div>
-                          )}
                         </div>
                       </div>
                       <div className="flex items-center gap-4">
@@ -374,7 +405,13 @@ export default function Dashboard() {
       <Card>
         <CardHeader className="pb-4">
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-            <CardTitle className="text-lg font-medium">All Patients</CardTitle>
+            <div>
+              <CardTitle className="text-lg font-medium">All Patients</CardTitle>
+              <p className="text-sm text-muted-foreground mt-1">
+                {totalPatients} patient{totalPatients !== 1 ? 's' : ''} found
+                {patientsFetching && <span className="ml-2 text-xs">(Loading...)</span>}
+              </p>
+            </div>
             <div className="relative w-full sm:w-80">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
               <Input
@@ -395,65 +432,123 @@ export default function Dashboard() {
                 <Skeleton key={i} className="h-16 w-full" />
               ))}
             </div>
-          ) : filteredPatients.length === 0 ? (
+          ) : patients.length === 0 ? (
             <div className="text-center py-12">
               <Users className="w-12 h-12 text-muted-foreground mx-auto mb-4" />
               <h3 className="text-lg font-medium mb-1">No patients found</h3>
               <p className="text-muted-foreground text-sm">
-                {searchQuery
+                {debouncedSearch
                   ? "Try adjusting your search"
                   : "Register your first patient to get started"}
               </p>
             </div>
           ) : (
-            <div className="space-y-2">
-              {filteredPatients.map((patient) => {
-                const patientBills = bills.filter((b) => b.patientId === patient.id);
-                const hasPending = patientBills.some((b) => b.pendingAmount > 0);
+            <>
+              <div className="space-y-2">
+                {patients.map((patient: Patient) => {
+                  const patientBills = bills.filter((b) => b.patientId === patient.id);
+                  const hasPending = patientBills.some((b) => b.pendingAmount > 0);
 
-                return (
-                  <Link
-                    key={patient.id}
-                    href={`/patient/${patient.id}`}
-                    className="block"
-                  >
-                    <div
-                      className="flex items-center justify-between p-4 rounded-lg border bg-card hover-elevate cursor-pointer transition-all"
-                      data-testid={`card-patient-${patient.id}`}
+                  return (
+                    <Link
+                      key={patient.id}
+                      href={`/patient/${patient.id}`}
+                      className="block"
                     >
-                      <div className="flex items-center gap-4">
-                        <div className="flex items-center justify-center w-10 h-10 rounded-full bg-primary/10 text-primary font-medium">
-                          {patient.name.charAt(0).toUpperCase()}
-                        </div>
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="font-medium" data-testid={`text-patient-name-${patient.id}`}>
-                              {patient.name}
-                            </span>
-                            {hasPending && (
-                              <Badge variant="destructive" className="text-xs">
-                                Pending
-                              </Badge>
-                            )}
+                      <div
+                        className="flex items-center justify-between p-4 rounded-lg border bg-card hover-elevate cursor-pointer transition-all"
+                        data-testid={`card-patient-${patient.id}`}
+                      >
+                        <div className="flex items-center gap-4">
+                          <div className="flex items-center justify-center w-10 h-10 rounded-full bg-primary/10 text-primary font-medium">
+                            {patient.name.charAt(0).toUpperCase()}
                           </div>
-                          <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                            <Phone className="w-3 h-3" />
-                            <span data-testid={`text-patient-phone-${patient.id}`}>
-                              {patient.phone}
-                            </span>
-                            <span className="text-border">|</span>
-                            <span>
-                              Registered: {format(new Date(patient.registrationDate), "dd MMM yyyy")}
-                            </span>
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <span className="font-medium" data-testid={`text-patient-name-${patient.id}`}>
+                                {patient.name}
+                              </span>
+                              {hasPending && (
+                                <Badge variant="destructive" className="text-xs">
+                                  Pending
+                                </Badge>
+                              )}
+                            </div>
+                            <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                              <Phone className="w-3 h-3" />
+                              <span data-testid={`text-patient-phone-${patient.id}`}>
+                                {patient.phone}
+                              </span>
+                              <span className="text-border">|</span>
+                              <span>
+                                Registered: {format(new Date(patient.registrationDate), "dd MMM yyyy")}
+                              </span>
+                            </div>
                           </div>
                         </div>
+                        <ChevronRight className="w-5 h-5 text-muted-foreground" />
                       </div>
-                      <ChevronRight className="w-5 h-5 text-muted-foreground" />
+                    </Link>
+                  );
+                })}
+              </div>
+
+              {/* Pagination Controls */}
+              {totalPages > 1 && (
+                <div className="flex items-center justify-between mt-6 pt-4 border-t">
+                  <div className="text-sm text-muted-foreground">
+                    Showing {((currentPage - 1) * PATIENTS_PER_PAGE) + 1} to{' '}
+                    {Math.min(currentPage * PATIENTS_PER_PAGE, totalPatients)} of{' '}
+                    {totalPatients} patients
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage(p => Math.max(1, p - 1))}
+                      disabled={currentPage === 1 || patientsFetching}
+                    >
+                      <ChevronLeft className="w-4 h-4 mr-1" />
+                      Previous
+                    </Button>
+                    <div className="flex items-center gap-1">
+                      {Array.from({ length: totalPages }, (_, i) => i + 1)
+                        .filter(page => {
+                          // Show first page, last page, and pages around current
+                          return page === 1 || page === totalPages ||
+                            (page >= currentPage - 1 && page <= currentPage + 1);
+                        })
+                        .map((page, idx, arr) => (
+                          <span key={page} className="flex items-center">
+                            {idx > 0 && arr[idx - 1] !== page - 1 && (
+                              <span className="px-2 text-muted-foreground">...</span>
+                            )}
+                            <Button
+                              variant={currentPage === page ? "default" : "outline"}
+                              size="sm"
+                              className="w-8 h-8 p-0"
+                              onClick={() => setCurrentPage(page)}
+                              disabled={patientsFetching}
+                            >
+                              {page}
+                            </Button>
+                          </span>
+                        ))
+                      }
                     </div>
-                  </Link>
-                );
-              })}
-            </div>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={() => setCurrentPage(p => Math.min(totalPages, p + 1))}
+                      disabled={currentPage >= totalPages || patientsFetching}
+                    >
+                      Next
+                      <ChevronRight className="w-4 h-4 ml-1" />
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </>
           )}
         </CardContent>
       </Card>

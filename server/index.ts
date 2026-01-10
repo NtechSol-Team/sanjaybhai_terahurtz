@@ -22,10 +22,10 @@ app.use(helmet({
   contentSecurityPolicy: process.env.NODE_ENV === "production" ? undefined : false,
 }));
 
-// Security: Rate limiting - 100 requests per 15 minutes per IP
+// Security: Rate limiting - 1000 requests per 15 minutes per IP (increased for normal usage)
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 100,
+  max: 1000,  // Increased from 100 to prevent 429 errors during normal usage
   standardHeaders: true,
   legacyHeaders: false,
   message: { error: "Too many requests, please try again later." },

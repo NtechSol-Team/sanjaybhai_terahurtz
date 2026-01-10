@@ -84,7 +84,8 @@ export default function PatientDetails() {
   const queryClient = useQueryClient();
   const [isDialogOpen, setIsDialogOpen] = useState(false);
   const [isEditDialogOpen, setIsEditDialogOpen] = useState(false);
-  const [isEditingPatient, setIsEditingPatient] = useState(false);
+  const [isEditingPatient, setIsEditingPatient] = useState(false); // For inline name/phone edit
+  const [isDentalProfileDialogOpen, setIsDentalProfileDialogOpen] = useState(false); // For dental profile dialog
   const [editingVisit, setEditingVisit] = useState<Visit | null>(null);
   const [, setLocation] = useRoute("/patient/:id"); // Used for navigation after delete
 
@@ -591,7 +592,7 @@ export default function PatientDetails() {
           )}
 
           <div className="flex gap-2">
-            <Dialog open={isEditingPatient} onOpenChange={setIsEditingPatient}>
+            <Dialog open={isDentalProfileDialogOpen} onOpenChange={setIsDentalProfileDialogOpen}>
               <DialogTrigger asChild>
                 <Button variant="outline" size="sm">
                   <Pencil className="w-4 h-4 mr-2" />
@@ -604,20 +605,11 @@ export default function PatientDetails() {
                 </DialogHeader>
                 <Form {...patientForm}>
                   <form onSubmit={patientForm.handleSubmit((data) => {
-                    const updatedData = { ...data };
-                    // Ensure undefined for empty strings to match strict schema if needed,
-                    // but for updatePatient type it likely accepts nulls.
-                    // We'll just pass data and let backend handle it, or clean it up.
-                    // apiRequest("PATCH", `/api/patients/${patientId}`, updatedData)
-                    updatePatientMutation.mutate(updatedData);
-                    // .then(() => {
-                    //   queryClient.invalidateQueries({ queryKey: ["/api/patients", patientId] });
-                    //   toast({ title: "Profile Updated", description: "Patient details updated successfully." });
-                    //   setIsEditingPatient(false);
-                    // })
-                    // .catch((err) => {
-                    //   toast({ title: "Update Failed", description: err.message, variant: "destructive" });
-                    // });
+                    updatePatientMutation.mutate(data, {
+                      onSuccess: () => {
+                        setIsDentalProfileDialogOpen(false);
+                      }
+                    });
                   })} className="space-y-4">
 
                     {/* Name, Phone, Date removed as per user request */}
