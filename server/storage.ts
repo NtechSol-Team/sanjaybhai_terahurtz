@@ -68,7 +68,7 @@ if (!connectionString) {
  * - 10 maximum for handling concurrent users during busy hours
  * - Auto-cleanup of idle connections to reduce database load
  */
-const pool = new Pool({
+export const pool = new Pool({
   connectionString,
   ssl: {
     rejectUnauthorized: false,

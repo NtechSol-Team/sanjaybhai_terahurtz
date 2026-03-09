@@ -2,8 +2,9 @@ import passport from "passport";
 import { Strategy as LocalStrategy } from "passport-local";
 import { Express } from "express";
 import session from "express-session";
-import createMemoryStore from "memorystore";
+import connectPgSimple from "connect-pg-simple";
 import { User } from "@shared/schema";
+import { pool } from "./storage";
 
 // Helper to compare strings safely if we were using a real DB, 
 // for now we match against env vars as requested.
@@ -22,7 +23,8 @@ function verifyCredentials(username: string, password: string): User | null {
 }
 
 export function setupAuth(app: Express) {
-    const MemoryStore = createMemoryStore(session);
+    const PgSession = connectPgSimple(session);
+
     const sessionSettings: session.SessionOptions = {
         secret: process.env.SESSION_SECRET || "super_secret_key_change_in_prod",
         resave: false,
@@ -31,8 +33,10 @@ export function setupAuth(app: Express) {
             secure: process.env.NODE_ENV === "production",
             maxAge: 24 * 60 * 60 * 1000, // 24 hours
         },
-        store: new MemoryStore({
-            checkPeriod: 86400000 // prune expired entries every 24h
+        store: new PgSession({
+            pool: pool,
+            tableName: "session",
+            createTableIfMissing: true,
         }),
     };
 
