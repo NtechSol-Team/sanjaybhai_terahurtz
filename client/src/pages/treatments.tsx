@@ -215,7 +215,7 @@ export default function Treatments() {
                   variant="outline"
                   onClick={() => apiRequest("POST", "/api/treatments/seed").then(() => {
                     queryClient.invalidateQueries({ queryKey: ["/api/treatments"] });
-                    toast({ title: "Treatments Seeded", description: "Common dental treatments added." });
+                    toast({ title: "Treatments Seeded", description: "Common treatments added." });
                   })}
                 >
                   Seed Defaults

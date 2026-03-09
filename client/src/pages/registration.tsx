@@ -1,6 +1,6 @@
 import { useForm } from "react-hook-form";
 import { zodResolver } from "@hookform/resolvers/zod";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient, useQuery } from "@tanstack/react-query";
 import { useLocation } from "wouter";
 import { UserPlus, Calendar, Phone, User, FileText, Stethoscope, Activity, AlertCircle } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
@@ -24,28 +24,283 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
+import {
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+} from "@/components/ui/tabs";
 import { useToast } from "@/hooks/use-toast";
-import { insertPatientSchema, type InsertPatient, CHIEF_DENTAL_COMPLAINTS, HABIT_HISTORY_OPTIONS } from "@shared/schema";
+import { insertPatientSchema, type InsertPatient, type Patient, type Referrer, insertReferrerSchema, type InsertReferrer } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
 import { format } from "date-fns";
 import { z } from "zod";
+import { useState } from "react";
 
 const registrationSchema = insertPatientSchema.extend({
-  // Dental specific fields from schema are already optional but we might want to enforce some logic here
-  chiefDentalComplaint: z.string().optional(),
-  dentalHistory: z.string().optional(),
-  habitHistory: z.string().optional(), // We'll handle this as a joined string from checkboxes
-  allergies: z.string().optional(),
-  lastDentalVisitDate: z.string().optional(),
   // Visit specific
   complaints: z.string().optional(), // General complaints
   diagnosis: z.string().optional(),
-  selectedHabits: z.array(z.string()).optional(),
 });
 
-type RegistrationForm = z.infer<typeof registrationSchema> & {
-  selectedHabits: string[]; // Helper for UI
-};
+type RegistrationForm = z.infer<typeof registrationSchema>;
+
+// Referrer Search Select Component
+function ReferrerSelect({ value, onChange }: { value?: string; onChange: (value?: string) => void }) {
+  const [searchTerm, setSearchTerm] = useState("");
+  const [isDialogOpen, setIsDialogOpen] = useState(false);
+  const [newReferrerName, setNewReferrerName] = useState("");
+  const [newReferrerPhone, setNewReferrerPhone] = useState("");
+  const { toast } = useToast();
+  const queryClient = useQueryClient();
+
+  // Fetch Referrers
+  const { data: referrers = [] } = useQuery<Referrer[]>({
+    queryKey: ["/api/referrers"],
+  });
+
+  const filteredReferrers = referrers.filter(r =>
+    r.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+    (r.phone && r.phone.includes(searchTerm))
+  );
+
+  const selectedReferrer = referrers.find(r => r.id === value);
+
+  // Mutation to create referrer
+  const createReferrerMutation = useMutation({
+    mutationFn: async (data: InsertReferrer) => {
+      const res = await apiRequest("POST", "/api/referrers", data);
+      if (!res.ok) {
+        const contentType = res.headers.get("content-type");
+        if (contentType && contentType.includes("application/json")) {
+          const json = await res.json();
+          throw new Error(json.error || "Failed to create referrer");
+        } else {
+          const text = await res.text();
+          throw new Error(`Server Error: ${text.slice(0, 100)}...`);
+        }
+      }
+      return res.json();
+    },
+    onSuccess: (newReferrer: Referrer) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/referrers"] });
+      onChange(newReferrer.id);
+      setIsDialogOpen(false);
+      setNewReferrerName("");
+      setNewReferrerPhone("");
+      toast({
+        title: "Referrer Added",
+        description: `${newReferrer.name} has been added as a referrer.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Failed to add referrer",
+        description: error.message,
+        variant: "destructive",
+      });
+    },
+  });
+
+  const handleAddExternalReferrer = () => {
+    if (!newReferrerName) {
+      toast({ title: "Name is required", variant: "destructive" });
+      return;
+    }
+    createReferrerMutation.mutate({
+      name: newReferrerName,
+      phone: newReferrerPhone,
+      isPatient: false,
+    });
+  };
+
+  return (
+    <div className="space-y-2">
+      <div className="flex gap-2">
+        <Input
+          type="text"
+          placeholder="Search referrer by name/phone..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+          className="flex-1"
+        />
+        <Dialog open={isDialogOpen} onOpenChange={setIsDialogOpen}>
+          <DialogTrigger asChild>
+            <Button type="button" variant="outline" className="whitespace-nowrap gap-1">
+              <UserPlus className="h-4 w-4" />
+              Add New
+            </Button>
+          </DialogTrigger>
+          <DialogContent className="sm:max-w-[425px]">
+            <DialogHeader>
+              <DialogTitle>Add New Referrer</DialogTitle>
+              <DialogDescription>
+                Add a new referrer either from existing patients or as an external contact.
+              </DialogDescription>
+            </DialogHeader>
+            <Tabs defaultValue="patient" className="w-full">
+              <TabsList className="grid w-full grid-cols-2">
+                <TabsTrigger value="patient">Existing Patient</TabsTrigger>
+                <TabsTrigger value="external">External</TabsTrigger>
+              </TabsList>
+
+              {/* Tab: Existing Patient */}
+              <TabsContent value="patient">
+                <div className="space-y-4 py-4">
+                  <PatientSearchForReferral onSelect={(patient) => {
+                    createReferrerMutation.mutate({
+                      name: patient.name,
+                      phone: patient.phone,
+                      isPatient: true,
+                      patientId: patient.id
+                    });
+                  }} />
+                </div>
+              </TabsContent>
+
+              {/* Tab: External */}
+              <TabsContent value="external">
+                <div className="space-y-4 py-4">
+                  <div className="space-y-2">
+                    <FormLabel>Name</FormLabel>
+                    <Input
+                      value={newReferrerName}
+                      onChange={(e) => setNewReferrerName(e.target.value)}
+                      placeholder="Referrer Name"
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <FormLabel>Phone</FormLabel>
+                    <Input
+                      value={newReferrerPhone}
+                      onChange={(e) => setNewReferrerPhone(e.target.value)}
+                      placeholder="Phone Number"
+                    />
+                  </div>
+                  <Button
+                    type="button"
+                    className="w-full"
+                    onClick={handleAddExternalReferrer}
+                    disabled={createReferrerMutation.isPending}
+                  >
+                    {createReferrerMutation.isPending ? "Adding..." : "Add External Referrer"}
+                  </Button>
+                </div>
+              </TabsContent>
+            </Tabs>
+          </DialogContent>
+        </Dialog>
+      </div>
+
+      <Select value={value || "none"} onValueChange={(val) => onChange(val === "none" ? undefined : val)}>
+        <SelectTrigger>
+          <SelectValue placeholder="Select referrer">
+            {selectedReferrer
+              ? `${selectedReferrer.name} (${selectedReferrer.isPatient ? 'Patient' : 'External'})`
+              : "Select referrer..."}
+          </SelectValue>
+        </SelectTrigger>
+        <SelectContent>
+          <SelectItem value="none">None (No referral)</SelectItem>
+          {filteredReferrers.map((referrer) => (
+            <SelectItem key={referrer.id} value={referrer.id}>
+              {referrer.name} {referrer.phone ? `(${referrer.phone})` : ''} - {referrer.isPatient ? 'Patient' : 'External'}
+            </SelectItem>
+          ))}
+          {searchTerm && filteredReferrers.length === 0 && (
+            <div className="p-2 text-sm text-muted-foreground text-center">
+              No referrers found. Click "Add New" to create one.
+            </div>
+          )}
+          {!searchTerm && filteredReferrers.length === 0 && (
+            <div className="p-2 text-sm text-muted-foreground text-center">
+              No referrers available. Please add a referrer.
+            </div>
+          )}
+        </SelectContent>
+      </Select>
+    </div>
+  );
+}
+
+// Helper component for searching patients inside the dialog
+function PatientSearchForReferral({ onSelect }: { onSelect: (patient: Patient) => void }) {
+  const [searchTerm, setSearchTerm] = useState("");
+  // Search for patients (default to first 5 if no search term)
+  const { data } = useQuery<{ data: Patient[] }>({
+    queryKey: ["/api/patients", { search: searchTerm, limit: 5 }],
+    queryFn: async () => {
+      const params = new URLSearchParams({ limit: "5" });
+      if (searchTerm) params.append("search", searchTerm);
+      const res = await apiRequest("GET", `/api/patients?${params.toString()}`);
+      return res.json();
+    },
+    // Always enabled to show recent patients by default
+  });
+
+  return (
+    <div className="space-y-2">
+      <FormLabel>Search Patient</FormLabel>
+      <div className="flex gap-2">
+        <Input
+          placeholder="Type to search or select from recent..."
+          value={searchTerm}
+          onChange={(e) => setSearchTerm(e.target.value)}
+        />
+        <Button variant="secondary" size="icon" disabled>
+          <SearchIcon className="h-4 w-4" />
+        </Button>
+      </div>
+      <div className="border rounded-md max-h-[200px] overflow-y-auto">
+        {data?.data && data.data.length > 0 ? (
+          data.data.map(p => (
+            <div
+              key={p.id}
+              className="p-2 hover:bg-accent cursor-pointer flex justify-between items-center"
+              onClick={() => onSelect(p)}
+            >
+              <div className="text-sm font-medium">{p.name}</div>
+              <div className="text-xs text-muted-foreground">{p.phone}</div>
+            </div>
+          ))
+        ) : (
+          <div className="p-4 text-center text-sm text-muted-foreground">
+            {searchTerm ? "No patients found" : "No recent patients found"}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Simple search icon component if needed, or import Search from lucide-react
+function SearchIcon(props: any) {
+  return (
+    <svg
+      {...props}
+      xmlns="http://www.w3.org/2000/svg"
+      width="24"
+      height="24"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="2"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+    >
+      <circle cx="11" cy="11" r="8" />
+      <path d="m21 21-4.3-4.3" />
+    </svg>
+  )
+}
 
 export default function Registration() {
   const [, setLocation] = useLocation();
@@ -60,30 +315,17 @@ export default function Registration() {
       registrationDate: format(new Date(), "yyyy-MM-dd"),
       complaints: "",
       diagnosis: "",
-      chiefDentalComplaint: "",
-      dentalHistory: "",
-      habitHistory: "",
-      selectedHabits: [],
-      allergies: "",
-      lastDentalVisitDate: "",
+      referredByReferrerId: undefined,
     },
   });
 
   const mutation = useMutation({
     mutationFn: async (data: RegistrationForm) => {
-      // transform selectedHabits to comma-separated string if habitHistory is empty
-      const selectedHabits = data.selectedHabits || [];
-      const habitString = selectedHabits.length > 0 ? selectedHabits.join(", ") : data.habitHistory;
-
       const patientData: InsertPatient = {
         name: data.name,
         phone: data.phone,
         registrationDate: data.registrationDate,
-        chiefDentalComplaint: data.chiefDentalComplaint || undefined,
-        dentalHistory: data.dentalHistory || undefined,
-        habitHistory: habitString || undefined,
-        allergies: data.allergies || undefined,
-        lastDentalVisitDate: data.lastDentalVisitDate || undefined,
+        referredByReferrerId: data.referredByReferrerId,
       };
 
       const patientResponse = await apiRequest("POST", "/api/patients", patientData);
@@ -132,7 +374,7 @@ export default function Registration() {
           New Patient Registration
         </h1>
         <p className="text-muted-foreground">
-          Register a new patient with their dental history and initial details
+          Register a new patient with their therapy history and initial details
         </p>
       </div>
 
@@ -230,140 +472,40 @@ export default function Registration() {
             </CardContent>
           </Card>
 
-          {/* DENTAL HISTORY */}
+          {/* REFERRAL INFORMATION */}
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2 text-lg">
-                <Activity className="w-5 h-5 text-primary" />
-                Dental & Medical History
+                <UserPlus className="w-5 h-5 text-primary" />
+                Referral Information (Optional)
               </CardTitle>
+              <CardDescription>
+                If this patient was referred by an existing patient, select them below. The referring patient will receive 5% of this patient's first bill as credit.
+              </CardDescription>
             </CardHeader>
-            <CardContent className="space-y-6">
-
-              <div className="grid gap-6 md:grid-cols-2">
-                <FormField
-                  control={form.control}
-                  name="chiefDentalComplaint"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Chief Complaint</FormLabel>
-                      <Select onValueChange={field.onChange} defaultValue={field.value}>
-                        <FormControl>
-                          <SelectTrigger>
-                            <SelectValue placeholder="Select primary complaint" />
-                          </SelectTrigger>
-                        </FormControl>
-                        <SelectContent>
-                          {CHIEF_DENTAL_COMPLAINTS.map((complaint) => (
-                            <SelectItem key={complaint} value={complaint}>
-                              {complaint}
-                            </SelectItem>
-                          ))}
-                        </SelectContent>
-                      </Select>
-                      <FormDescription>Main reason for visiting</FormDescription>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-
-                <FormField
-                  control={form.control}
-                  name="lastDentalVisitDate"
-                  render={({ field }) => (
-                    <FormItem>
-                      <FormLabel>Last Dental Visit</FormLabel>
-                      <FormControl>
-                        <Input type="date" {...field} value={field.value || ''} />
-                      </FormControl>
-                      <FormMessage />
-                    </FormItem>
-                  )}
-                />
-              </div>
-
+            <CardContent>
               <FormField
                 control={form.control}
-                name="dentalHistory"
+                name="referredByReferrerId"
                 render={({ field }) => (
                   <FormItem>
-                    <FormLabel>Past Dental History (Optional)</FormLabel>
+                    <FormLabel>Referred By (Patient or External)</FormLabel>
                     <FormControl>
-                      <Textarea
-                        placeholder="Previous treatments (RCT, Extractions, etc.)..."
-                        className="resize-none"
-                        {...field}
-                        value={field.value || ""}
+                      <ReferrerSelect
+                        value={field.value}
+                        onChange={field.onChange}
                       />
                     </FormControl>
+                    <FormDescription>
+                      Search for an existing referrer or add a new one. The referrer will receive credit for this patient's first bill.
+                    </FormDescription>
                     <FormMessage />
                   </FormItem>
                 )}
               />
-
-              <FormField
-                control={form.control}
-                name="allergies"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel className="flex items-center gap-2">
-                      <AlertCircle className="w-4 h-4 text-muted-foreground" />
-                      Allergies & Medical Conditions (Optional)
-                    </FormLabel>
-                    <FormControl>
-                      <Textarea
-                        placeholder="Drug allergies (Local Anesthesia, Antibiotics), BP, Diabetes..."
-                        className="resize-none border-red-200 focus-visible:ring-red-500"
-                        {...field}
-                        value={field.value || ""}
-                      />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-
-              <div className="space-y-3">
-                <FormLabel>Habits</FormLabel>
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-                  {HABIT_HISTORY_OPTIONS.map((habit) => (
-                    <FormField
-                      key={habit}
-                      control={form.control}
-                      name="selectedHabits"
-                      render={({ field }) => {
-                        return (
-                          <FormItem
-                            key={habit}
-                            className="flex flex-row items-start space-x-3 space-y-0"
-                          >
-                            <FormControl>
-                              <Checkbox
-                                checked={field.value?.includes(habit)}
-                                onCheckedChange={(checked) => {
-                                  return checked
-                                    ? field.onChange([...field.value, habit])
-                                    : field.onChange(
-                                      field.value?.filter(
-                                        (value) => value !== habit
-                                      )
-                                    )
-                                }}
-                              />
-                            </FormControl>
-                            <FormLabel className="font-normal cursor-pointer">
-                              {habit}
-                            </FormLabel>
-                          </FormItem>
-                        )
-                      }}
-                    />
-                  ))}
-                </div>
-              </div>
-
             </CardContent>
           </Card>
+
 
           <div className="flex justify-end gap-3">
             <Button

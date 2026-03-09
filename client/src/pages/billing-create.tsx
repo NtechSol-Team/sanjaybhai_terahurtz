@@ -102,7 +102,15 @@ export default function BillingCreate() {
 
       const treatmentTotal = selectedTreatments.reduce((sum, t) => sum + (t.price * (1 - (t.discount || 0) / 100)), 0);
       const medicineTotal = selectedMedicines.reduce((sum, m) => sum + (m.total * (1 - (m.discount || 0) / 100)), 0);
-      const grandTotal = treatmentTotal + medicineTotal;
+
+      // Calculate subtotal before credit
+      const subtotal = treatmentTotal + medicineTotal;
+
+      // Apply referral credit if patient has any (up to the subtotal amount)
+      const availableCredit = selectedPatient.referralCreditBalance || 0;
+      const creditToApply = Math.min(availableCredit, subtotal);
+      const grandTotal = subtotal - creditToApply;
+
       const paid = parseFloat(amountPaid) || 0;
 
       return await apiRequest("POST", "/api/bills", {
@@ -112,7 +120,7 @@ export default function BillingCreate() {
         medicines: selectedMedicines,
         treatmentTotal,
         medicineTotal,
-        // Discounts are now per-item
+        // Credit is applied at bill level
         grandTotal,
         amountPaid: paid,
       });
@@ -555,30 +563,56 @@ export default function BillingCreate() {
               </div>
 
               {/* Bill Summary */}
-              <div className="border-t pt-4 space-y-3">
-                <div className="flex justify-between items-center text-sm">
-                  <span>Treatment Total</span>
-                  <span>₹{treatmentGross.toFixed(2)}</span>
+              <div className="space-y-3 p-6 bg-muted/30 rounded-lg">
+                <div className="flex justify-between text-sm">
+                  <span>Treatment Total:</span>
+                  <span className="font-medium">
+                    ₹{selectedTreatments.reduce((sum, t) => sum + (t.price * (1 - (t.discount || 0) / 100)), 0).toFixed(2)}
+                  </span>
+                </div>
+                <div className="flex justify-between text-sm">
+                  <span>Medicine Total:</span>
+                  <span className="font-medium">
+                    ₹{selectedMedicines.reduce((sum, m) => sum + (m.total * (1 - (m.discount || 0) / 100)), 0).toFixed(2)}
+                  </span>
                 </div>
 
-                <div className="flex justify-between items-center text-sm">
-                  <span>Medicine Total</span>
-                  <span>₹{medicineGross.toFixed(2)}</span>
-                </div>
+                {selectedPatient && selectedPatient.referralCreditBalance && selectedPatient.referralCreditBalance > 0 && (
+                  <>
+                    <div className="flex justify-between text-sm pt-2 border-t">
+                      <span>Subtotal:</span>
+                      <span className="font-medium">
+                        ₹{(
+                          selectedTreatments.reduce((sum, t) => sum + (t.price * (1 - (t.discount || 0) / 100)), 0) +
+                          selectedMedicines.reduce((sum, m) => sum + (m.total * (1 - (m.discount || 0) / 100)), 0)
+                        ).toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-sm text-green-600">
+                      <span>Referral Credit Applied:</span>
+                      <span className="font-medium">
+                        -₹{(() => {
+                          const subtotal = selectedTreatments.reduce((sum, t) => sum + (t.price * (1 - (t.discount || 0) / 100)), 0) +
+                            selectedMedicines.reduce((sum, m) => sum + (m.total * (1 - (m.discount || 0) / 100)), 0);
+                          const creditToApply = Math.min(selectedPatient.referralCreditBalance || 0, subtotal);
+                          return creditToApply.toFixed(2);
+                        })()}
+                      </span>
+                    </div>
+                  </>
+                )}
 
-                <div className="flex justify-between items-center text-sm pt-1 border-t border-dashed font-medium">
-                  <span>Gross Total</span>
-                  <span>₹{grossTotal.toFixed(2)}</span>
-                </div>
-
-                <div className="flex justify-between items-center text-sm text-destructive">
-                  <span>Total Discount</span>
-                  <span>-₹{totalDiscount.toFixed(2)}</span>
-                </div>
-
-                <div className="flex justify-between font-semibold text-lg border-t pt-3">
-                  <span>Final Amount</span>
-                  <span>₹{finalAmount.toFixed(2)}</span>
+                <div className="flex justify-between text-lg font-bold pt-3 border-t-2">
+                  <span>Grand Total:</span>
+                  <span className="text-primary">
+                    ₹{(() => {
+                      const treatmentTotal = selectedTreatments.reduce((sum, t) => sum + (t.price * (1 - (t.discount || 0) / 100)), 0);
+                      const medicineTotal = selectedMedicines.reduce((sum, m) => sum + (m.total * (1 - (m.discount || 0) / 100)), 0);
+                      const subtotal = treatmentTotal + medicineTotal;
+                      const creditToApply = selectedPatient ? Math.min(selectedPatient.referralCreditBalance || 0, subtotal) : 0;
+                      return (subtotal - creditToApply).toFixed(2);
+                    })()}
+                  </span>
                 </div>
               </div>
 

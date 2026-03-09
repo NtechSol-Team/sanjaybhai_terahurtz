@@ -167,7 +167,7 @@ export function DentalPrescription({ patientId, visitId, onClose }: Prescription
                 <CardHeader className="pb-3">
                     <CardTitle className="flex items-center gap-2 text-lg">
                         <FileText className="w-5 h-5" />
-                        Dental Prescription
+                        Prescription
                     </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-4">
@@ -298,7 +298,7 @@ export function DentalPrescription({ patientId, visitId, onClose }: Prescription
             <div className="hidden">
                 <div ref={printRef}>
                     <div className="header">
-                        <div className="clinic-name">Dental Care Clinic</div>
+                        <div className="clinic-name">TeraCare Clinic</div>
                         <div>Address Line 1, City - PIN</div>
                         <div>Phone: +91 XXXXXXXXXX</div>
                     </div>
@@ -362,7 +362,7 @@ export function DentalPrescription({ patientId, visitId, onClose }: Prescription
                     <div className="footer">
                         <div></div>
                         <div className="signature">
-                            Doctor's Signature
+                            Therapist's Signature
                         </div>
                     </div>
                 </div>

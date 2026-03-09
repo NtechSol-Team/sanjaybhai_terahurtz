@@ -47,10 +47,10 @@ export default function AuthPage() {
             <div className="w-full max-w-md space-y-6">
                 <div className="text-center space-y-2">
                     <h1 className="text-3xl font-bold tracking-tighter text-primary">
-                        Dental Care
+                        TeraCare
                     </h1>
                     <p className="text-muted-foreground text-lg">
-                        Dental Clinic Management System
+                        Therapy Management System
                     </p>
                 </div>
 

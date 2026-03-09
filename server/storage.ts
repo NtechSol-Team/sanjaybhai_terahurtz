@@ -23,6 +23,10 @@
 import {
   type Patient,
   type InsertPatient,
+  type Referrer,
+  type ReferrerStats,
+  type InsertReferrer,
+  type PatientReferralInfo,
   type Visit,
   type InsertVisit,
   type Medicine,
@@ -44,6 +48,8 @@ import {
   type InsertTreatmentSitting,
   type UpdateTreatmentSitting,
   type SittingDetail,
+  type BodyRecord,
+  type InsertBodyRecord,
 } from "@shared/schema";
 import { randomUUID } from "crypto";
 import { Pool } from "pg";
@@ -84,6 +90,17 @@ export interface IStorage {
   createPatient(patient: InsertPatient): Promise<Patient>;
   updatePatient(id: string, patient: InsertPatient): Promise<Patient | undefined>;
   deletePatient(id: string): Promise<boolean>;
+  // Referral system methods
+  getPatientReferralInfo(patientId: string): Promise<PatientReferralInfo>;
+  updatePatientCreditBalance(patientId: string, additionalCredit: number): Promise<Patient | undefined>;
+
+  // Referrers (both patient and non-patient referrers)
+  getReferrers(): Promise<Referrer[]>;
+  getReferrer(id: string): Promise<Referrer | undefined>;
+  getReferrerStats(id: string): Promise<ReferrerStats | undefined>;
+  createReferrer(referrer: InsertReferrer): Promise<Referrer>;
+  updateReferrerCredit(referrerId: string, additionalCredit: number): Promise<Referrer | undefined>;
+
 
   // Visits
   getVisits(): Promise<Visit[]>;
@@ -148,6 +165,11 @@ export interface IStorage {
   deleteTreatmentSitting(id: string): Promise<boolean>;
   getPendingSittings(): Promise<TreatmentSitting[]>; // For reports
 
+  // Body Records (Body Chart)
+  getBodyRecords(patientId: string): Promise<BodyRecord[]>;
+  createBodyRecord(record: InsertBodyRecord): Promise<BodyRecord>;
+  deleteBodyRecord(patientId: string, bodyPart: string): Promise<void>;
+
   // Initialization
   initialize(): Promise<void>;
 }
@@ -159,12 +181,11 @@ type DbPatientRow = {
   name: string;
   phone: string;
   registration_date: string;
-  // Dental-specific fields
-  chief_dental_complaint?: string;
-  dental_history?: string;
-  habit_history?: string;
-  allergies?: string;
-  last_dental_visit_date?: string;
+  // Referral system fields
+  referred_by_patient_id?: string | number;
+  referred_by_referrer_id?: string | number;
+  referral_credit_balance?: number;
+  first_bill_processed?: boolean;
 };
 
 type DbVisitRow = {
@@ -260,17 +281,24 @@ type DbTreatmentSittingRow = {
   notes?: string;
 };
 
+type DbBodyRecordRow = {
+  id: string | number;
+  patient_id: string | number;
+  body_part: string;
+  pain_level?: number;
+  notes?: string;
+  created_at: string;
+  updated_at: string;
+};
+
 const createTableStatements = [
   `CREATE TABLE IF NOT EXISTS patients (
     id BIGSERIAL PRIMARY KEY,
     name TEXT NOT NULL,
     phone TEXT NOT NULL,
     registration_date TEXT NOT NULL,
-    chief_dental_complaint TEXT,
-    dental_history TEXT,
-    habit_history TEXT,
-    allergies TEXT,
-    last_dental_visit_date TEXT
+    referred_by_patient_id BIGINT REFERENCES patients(id) ON DELETE SET NULL,
+    referral_discount_percentage DOUBLE PRECISION DEFAULT 0
   )`,
   `CREATE TABLE IF NOT EXISTS visits (
     id BIGSERIAL PRIMARY KEY,
@@ -358,16 +386,44 @@ const createTableStatements = [
     notes TEXT
   )`,
   `CREATE INDEX IF NOT EXISTS treatment_sittings_patient_idx ON treatment_sittings(patient_id)`,
+  `CREATE TABLE IF NOT EXISTS body_records (
+    id BIGSERIAL PRIMARY KEY,
+    patient_id BIGINT REFERENCES patients(id) ON DELETE CASCADE,
+    body_part TEXT NOT NULL,
+    pain_level INTEGER,
+    notes TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    UNIQUE(patient_id, body_part)
+  )`,
+  `CREATE TABLE IF NOT EXISTS body_records (
+    id SERIAL PRIMARY KEY,
+    patient_id INTEGER NOT NULL REFERENCES patients(id),
+    record_date TEXT NOT NULL,
+    teeth_data JSONB NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`,
+  // Enhanced Referral System
+  // NOTE: patient_id is created as TEXT to accommodate both UUIDs and Integers without error.
+  // We strictly enforce the FK via ALTER TABLE later if possible, but allow creation first.
+  `CREATE TABLE IF NOT EXISTS referrers (
+    id BIGSERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    phone TEXT,
+    is_patient BOOLEAN DEFAULT FALSE,
+    patient_id TEXT, 
+    total_credit_earned DOUBLE PRECISION DEFAULT 0,
+    available_credit DOUBLE PRECISION DEFAULT 0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+  )`
 ];
 
 // Dental-specific column additions for existing databases
 const alterTableStatements = [
-  // Patients table additions
-  `ALTER TABLE patients ADD COLUMN IF NOT EXISTS chief_dental_complaint TEXT`,
-  `ALTER TABLE patients ADD COLUMN IF NOT EXISTS dental_history TEXT`,
-  `ALTER TABLE patients ADD COLUMN IF NOT EXISTS habit_history TEXT`,
-  `ALTER TABLE patients ADD COLUMN IF NOT EXISTS allergies TEXT`,
-  `ALTER TABLE patients ADD COLUMN IF NOT EXISTS last_dental_visit_date TEXT`,
+  // Migration for patients table: drop old columns, rename discount to credit, add first_bill_processed
+  `DO $$
+    WHEN undefined_column THEN NULL; -- Ignore errors if columns don't exist
+  END $$;`,
   // Medicines table additions
   `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS category TEXT DEFAULT 'Medicine'`,
   `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS expiry_date TEXT`,
@@ -377,6 +433,24 @@ const alterTableStatements = [
   `ALTER TABLE treatments ADD COLUMN IF NOT EXISTS category TEXT`,
   // Bills table additions
   `ALTER TABLE bills ADD COLUMN IF NOT EXISTS gst_total DOUBLE PRECISION DEFAULT 0`,
+  // Fix for referrers table patient_id type (it was BIGINT but patients might be TEXT/UUID)
+  `ALTER TABLE referrers ALTER COLUMN patient_id TYPE TEXT USING patient_id::TEXT`,
+  `ALTER TABLE referrers ADD COLUMN IF NOT EXISTS total_credit_earned DOUBLE PRECISION DEFAULT 0`,
+  `ALTER TABLE referrers ADD COLUMN IF NOT EXISTS available_credit DOUBLE PRECISION DEFAULT 0`,
+  `ALTER TABLE patients ADD COLUMN IF NOT EXISTS referral_credit_balance DOUBLE PRECISION DEFAULT 0`,
+  `ALTER TABLE patients ADD COLUMN IF NOT EXISTS first_bill_processed BOOLEAN DEFAULT FALSE`,
+  `ALTER TABLE patients ADD COLUMN IF NOT EXISTS referred_by_referrer_id BIGINT`,
+  `ALTER TABLE patients ADD COLUMN IF NOT EXISTS referred_by_patient_id BIGINT REFERENCES patients(id) ON DELETE SET NULL`,
+  // Try to add FK constraint if it doesn't exist (this might fail if types mismatch perfectly, but at least table exists)
+  // We use a DO block to ignore error if constraint already exists or fails
+  `DO $$ 
+   BEGIN 
+     ALTER TABLE referrers ADD CONSTRAINT referrers_patient_id_fkey FOREIGN KEY (patient_id) REFERENCES patients(id); 
+   EXCEPTION 
+     WHEN duplicate_object THEN NULL;
+     WHEN undefined_table THEN NULL;
+     WHEN OTHERS THEN NULL; -- Ignore type mismatch for now, application logic handles linking
+   END $$;`
 ];
 
 async function ensureTables(): Promise<void> {
@@ -426,7 +500,7 @@ class DataCache {
   }
 }
 
-type EntityTable = "patients" | "visits" | "medicines" | "treatments" | "bills" | "expenses" | "appointments" | "tooth_records" | "treatment_sittings";
+type EntityTable = "referrers" | "patients" | "visits" | "medicines" | "treatments" | "bills" | "expenses" | "appointments" | "tooth_records" | "treatment_sittings" | "body_records";
 type IdMode = "numeric" | "text";
 
 async function getColumnDataType(table: string, column: string): Promise<string | undefined> {
@@ -440,7 +514,7 @@ async function getColumnDataType(table: string, column: string): Promise<string 
 }
 
 async function detectIdModes(): Promise<Record<EntityTable, IdMode>> {
-  const tables: EntityTable[] = ["patients", "visits", "medicines", "treatments", "bills", "expenses", "appointments", "tooth_records", "treatment_sittings"];
+  const tables: EntityTable[] = ["referrers", "patients", "visits", "medicines", "treatments", "bills", "expenses", "appointments", "tooth_records", "treatment_sittings", "body_records"];
   const entries = await Promise.all(
     tables.map(async (table) => {
       const dataType = await getColumnDataType(table, "id");
@@ -460,12 +534,32 @@ const mapPatient = (row: DbPatientRow): Patient => ({
   name: row.name,
   phone: row.phone,
   registrationDate: row.registration_date,
-  // Dental-specific fields
-  chiefDentalComplaint: row.chief_dental_complaint,
-  dentalHistory: row.dental_history,
-  habitHistory: row.habit_history,
-  allergies: row.allergies,
-  lastDentalVisitDate: row.last_dental_visit_date,
+  referredByPatientId: row.referred_by_patient_id ? String(row.referred_by_patient_id) : undefined,
+  referredByReferrerId: row.referred_by_referrer_id ? String(row.referred_by_referrer_id) : undefined,
+  referralCreditBalance: row.referral_credit_balance || 0,
+  firstBillProcessed: row.first_bill_processed || false,
+});
+
+type DbReferrerRow = {
+  id: string | number;
+  name: string;
+  phone: string;
+  is_patient: boolean;
+  patient_id: string | number;
+  total_credit_earned: number;
+  available_credit: number;
+  created_at: string;
+};
+
+const mapReferrer = (row: DbReferrerRow): Referrer => ({
+  id: normalizeId(row.id),
+  name: row.name,
+  phone: row.phone,
+  isPatient: row.is_patient,
+  patientId: row.patient_id ? normalizeId(row.patient_id) : undefined,
+  totalCreditEarned: Number(row.total_credit_earned),
+  availableCredit: Number(row.available_credit),
+  createdAt: row.created_at,
 });
 
 const mapVisit = (row: DbVisitRow): Visit => ({
@@ -606,9 +700,20 @@ const mapTreatmentSitting = (row: DbTreatmentSittingRow): TreatmentSitting => {
   };
 };
 
+const mapBodyRecord = (row: DbBodyRecordRow): BodyRecord => ({
+  id: normalizeId(row.id),
+  patientId: normalizeId(row.patient_id),
+  bodyPart: row.body_part,
+  painLevel: row.pain_level,
+  notes: row.notes,
+  createdAt: row.created_at,
+  updatedAt: row.updated_at,
+});
+
 export class PostgresStorage implements IStorage {
   private ready: Promise<void>;
   private idModes: Record<EntityTable, IdMode> = {
+    referrers: "numeric",
     patients: "text",
     visits: "text",
     medicines: "text",
@@ -618,6 +723,7 @@ export class PostgresStorage implements IStorage {
     appointments: "text",
     tooth_records: "text",
     treatment_sittings: "text",
+    body_records: "text",
   };
   private cache = new DataCache(60_000); // 60 second cache TTL for better performance
 
@@ -801,18 +907,64 @@ export class PostgresStorage implements IStorage {
         CREATE INDEX IF NOT EXISTS idx_bills_date ON bills(date);
         CREATE INDEX IF NOT EXISTS idx_visits_patient_id ON visits(patient_id);
         CREATE INDEX IF NOT EXISTS idx_visits_date ON visits(date);
-        CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
-        CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
         CREATE INDEX IF NOT EXISTS idx_appointments_patient_id ON appointments(patient_id);
         CREATE INDEX IF NOT EXISTS idx_appointments_date ON appointments(date);
+        CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(date);
+        CREATE INDEX IF NOT EXISTS idx_expenses_category ON expenses(category);
         CREATE INDEX IF NOT EXISTS idx_tooth_records_patient_id ON tooth_records(patient_id);
         CREATE INDEX IF NOT EXISTS idx_treatment_sittings_patient_id ON treatment_sittings(patient_id);
         CREATE INDEX IF NOT EXISTS idx_treatment_sittings_status ON treatment_sittings(status);
       `);
     } catch (e: any) {
-      // Indexes may already exist, ignore errors
       console.log("Index creation note:", e.message);
     }
+
+    // Body Records
+    await pool.query(`
+      CREATE TABLE IF NOT EXISTS body_records (
+        id SERIAL PRIMARY KEY,
+        patient_id INTEGER REFERENCES patients(id) ON DELETE CASCADE,
+        body_part TEXT NOT NULL,
+        pain_level INTEGER,
+        notes TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(patient_id, body_part)
+      );
+    `);
+  }
+
+  // Body Records methods
+  async getBodyRecords(patientId: string): Promise<BodyRecord[]> {
+    const { rows } = await pool.query<DbBodyRecordRow>(
+      `SELECT * FROM body_records WHERE patient_id = $1 ORDER BY created_at DESC`,
+      [this.convertId("patients", patientId)]
+    );
+    return rows.map(mapBodyRecord);
+  }
+
+  async createBodyRecord(record: InsertBodyRecord): Promise<BodyRecord> {
+    const { rows } = await pool.query<DbBodyRecordRow>(
+      `INSERT INTO body_records (patient_id, body_part, pain_level, notes)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (patient_id, body_part) 
+       DO UPDATE SET pain_level = EXCLUDED.pain_level, notes = EXCLUDED.notes, updated_at = NOW()
+       RETURNING *`,
+      [
+        this.convertId("patients", record.patientId),
+        record.bodyPart,
+        record.painLevel,
+        record.notes
+      ]
+    );
+    return mapBodyRecord(rows[0]);
+  }
+
+  async deleteBodyRecord(patientId: string, bodyPart: string): Promise<void> {
+    await pool.query(
+      `DELETE FROM body_records WHERE patient_id = $1 AND body_part = $2`,
+      [this.convertId("patients", patientId), bodyPart]
+    );
   }
 
   async getPatients(): Promise<Patient[]> {
@@ -822,8 +974,9 @@ export class PostgresStorage implements IStorage {
       return cached;
     }
     const { rows } = await pool.query<DbPatientRow>(
-      `SELECT id, name, phone, registration_date, chief_dental_complaint, dental_history, 
-              habit_history, allergies, last_dental_visit_date 
+      `SELECT id, name, phone, registration_date, chief_dental_complaint, dental_history,
+        habit_history, allergies, last_dental_visit_date, referred_by_referrer_id,
+        referred_by_patient_id, referral_credit_balance, first_bill_processed
        FROM patients ORDER BY registration_date DESC`
     );
     const patients = rows.map(mapPatient);
@@ -834,15 +987,16 @@ export class PostgresStorage implements IStorage {
   async getPatient(id: string): Promise<Patient | undefined> {
     await this.waitForReady();
     const normalizedId = normalizeId(id);
-    const cacheKey = `patient:${normalizedId}`;
+    const cacheKey = `patient:${normalizedId} `;
     const cached = this.cache.get<Patient>(cacheKey);
     if (cached) {
       return cached;
     }
     const dbId = this.convertId("patients", id);
     const { rows } = await pool.query<DbPatientRow>(
-      `SELECT id, name, phone, registration_date, chief_dental_complaint, dental_history, 
-              habit_history, allergies, last_dental_visit_date 
+      `SELECT id, name, phone, registration_date, chief_dental_complaint, dental_history,
+        habit_history, allergies, last_dental_visit_date, referred_by_referrer_id,
+        referred_by_patient_id, referral_credit_balance, first_bill_processed
        FROM patients WHERE id = $1`,
       [dbId]
     );
@@ -857,21 +1011,48 @@ export class PostgresStorage implements IStorage {
     await this.waitForReady();
     const useNumericId = this.usesNumericId("patients");
     const query = useNumericId
-      ? `INSERT INTO patients (name, phone, registration_date, chief_dental_complaint, dental_history, habit_history, allergies, last_dental_visit_date)
+      ? `INSERT INTO patients (name, phone, registration_date, referred_by_patient_id, referral_credit_balance, first_bill_processed, referred_by_referrer_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         RETURNING *`
+      : `INSERT INTO patients (id, name, phone, registration_date, referred_by_patient_id, referral_credit_balance, first_bill_processed, referred_by_referrer_id)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
-         RETURNING id, name, phone, registration_date, chief_dental_complaint, dental_history, habit_history, allergies, last_dental_visit_date`
-      : `INSERT INTO patients (id, name, phone, registration_date, chief_dental_complaint, dental_history, habit_history, allergies, last_dental_visit_date)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-         RETURNING id, name, phone, registration_date, chief_dental_complaint, dental_history, habit_history, allergies, last_dental_visit_date`;
+         RETURNING *`;
+
+    // Handle string/number conversion for referrers if using numeric IDs
+    let referrerId = null;
+    if (insertPatient.referredByReferrerId) {
+      referrerId = this.idModes.referrers === "numeric"
+        ? parseInt(insertPatient.referredByReferrerId)
+        : insertPatient.referredByReferrerId;
+    }
+
     const params = useNumericId
-      ? [insertPatient.name, insertPatient.phone, insertPatient.registrationDate,
-      insertPatient.chiefDentalComplaint || null, insertPatient.dentalHistory || null,
-      insertPatient.habitHistory || null, insertPatient.allergies || null, insertPatient.lastDentalVisitDate || null]
-      : [randomUUID(), insertPatient.name, insertPatient.phone, insertPatient.registrationDate,
-      insertPatient.chiefDentalComplaint || null, insertPatient.dentalHistory || null,
-      insertPatient.habitHistory || null, insertPatient.allergies || null, insertPatient.lastDentalVisitDate || null];
+      ? [
+        insertPatient.name,
+        insertPatient.phone,
+        insertPatient.registrationDate,
+        insertPatient.referredByPatientId ? this.convertId("patients", insertPatient.referredByPatientId) : null,
+        insertPatient.referralCreditBalance ?? 0,
+        insertPatient.firstBillProcessed ?? false,
+        referrerId
+      ]
+      : [
+        randomUUID(),
+        insertPatient.name,
+        insertPatient.phone,
+        insertPatient.registrationDate,
+        insertPatient.referredByPatientId ? this.convertId("patients", insertPatient.referredByPatientId) : null,
+        insertPatient.referralCreditBalance ?? 0,
+        insertPatient.firstBillProcessed ?? false,
+        referrerId
+      ];
     const { rows } = await pool.query<DbPatientRow>(query, params);
     const patient = mapPatient(rows[0]);
+
+    // Note: Credit is added when the referred patient's FIRST BILL is created (5% commission)
+
+    // Note: Additional credit is added when the referred patient's FIRST BILL is created
+
     this.cache.invalidate("patients");
     this.cache.invalidate("patient:");
     return patient;
@@ -879,17 +1060,29 @@ export class PostgresStorage implements IStorage {
 
   async updatePatient(id: string, insertPatient: InsertPatient): Promise<Patient | undefined> {
     await this.waitForReady();
+    const query = `UPDATE patients
+       SET name = $1, phone = $2, registration_date = $3,
+           referred_by_patient_id = $4, referral_credit_balance = $5, first_bill_processed = $6,
+           referred_by_referrer_id = $7
+       WHERE id = $8
+       RETURNING *`;
+
+    // Handle referrer conversion
+    let referrerId = null;
+    if (insertPatient.referredByReferrerId) {
+      referrerId = this.idModes.referrers === "numeric"
+        ? parseInt(insertPatient.referredByReferrerId)
+        : insertPatient.referredByReferrerId;
+    }
+
     const { rows } = await pool.query<DbPatientRow>(
-      `UPDATE patients
-       SET name = $1, phone = $2, registration_date = $3, 
-           chief_dental_complaint = $4, dental_history = $5, habit_history = $6, 
-           allergies = $7, last_dental_visit_date = $8
-       WHERE id = $9
-       RETURNING id, name, phone, registration_date, chief_dental_complaint, dental_history, habit_history, allergies, last_dental_visit_date`,
+      query,
       [insertPatient.name, insertPatient.phone, insertPatient.registrationDate,
-      insertPatient.chiefDentalComplaint || null, insertPatient.dentalHistory || null,
-      insertPatient.habitHistory || null, insertPatient.allergies || null,
-      insertPatient.lastDentalVisitDate || null, id]
+      insertPatient.referredByPatientId ? this.convertId("patients", insertPatient.referredByPatientId) : null,
+      insertPatient.referralCreditBalance ?? 0,
+      insertPatient.firstBillProcessed ?? false,
+        referrerId,
+      this.convertId("patients", id)]
     );
     const patient = rows[0] ? mapPatient(rows[0]) : undefined;
     if (patient) {
@@ -903,21 +1096,38 @@ export class PostgresStorage implements IStorage {
     await this.waitForReady();
     const dbId = this.convertId("patients", id);
 
-    // 1. Get all bills for this patient to restore medicine stock
-    const { rows: patientBills } = await pool.query<DbBillRow>(
-      "SELECT * FROM bills WHERE patient_id = $1",
+    // 0. Get the patient to check for referrer
+    const patient = await this.getPatient(id);
+
+    // 1. Get all bills for this patient
+    const { rows: dbBills } = await pool.query<DbBillRow>(
+      "SELECT * FROM bills WHERE patient_id = $1 ORDER BY date ASC, id ASC",
       [dbId]
     );
+    const patientBills = dbBills.map(mapBill);
+
+    // **REFERRAL CREDIT SYSTEM**: Reverse credit if patient is deleted
+    if (patient && patient.referredByReferrerId && patient.firstBillProcessed && patientBills.length > 0) {
+      // Find the first bill (should be the first one due to ORDER BY)
+      const firstBill = patientBills[0];
+      const referralCredit = firstBill.grandTotal * 0.05;
+
+      // Deduct from referrer (negative amount)
+      try {
+        await this.updateReferrerCredit(patient.referredByReferrerId, -referralCredit);
+      } catch (err: any) {
+        console.error(`Failed to deduct referral credit on patient deletion:`, err.message);
+      }
+    }
 
     // 2. Restore stock for each bill
-    for (const row of patientBills) {
-      const bill = mapBill(row);
+    for (const bill of patientBills) {
       for (const med of bill.medicines) {
         if (med.medicineId && med.quantity > 0) {
           try {
             await this.updateMedicineStock(med.medicineId, med.quantity);
           } catch (e) {
-            console.error(`Failed to restore stock for medicine ${med.medicineId} in bill ${bill.id}`, e);
+            console.error(`Failed to restore stock for medicine ${med.medicineId} in bill ${bill.id} `, e);
           }
         }
       }
@@ -929,7 +1139,7 @@ export class PostgresStorage implements IStorage {
 
     if (success) {
       this.cache.invalidate("patients");
-      this.cache.invalidate(`patient:${normalizeId(id)}`);
+      this.cache.invalidate(`patient:${normalizeId(id)} `);
       this.cache.invalidate("bills");
       this.cache.invalidate("medicines");
       this.cache.invalidate("visits");
@@ -937,6 +1147,186 @@ export class PostgresStorage implements IStorage {
 
     return success;
   }
+
+  // Referral system methods
+  async getPatientReferralInfo(patientId: string): Promise<PatientReferralInfo> {
+    await this.waitForReady();
+    const dbId = this.convertId("patients", patientId);
+
+    // Get patients referred by this patient
+    const { rows: referredPatientsRows } = await pool.query<DbPatientRow>(
+      `SELECT * FROM patients WHERE referred_by_patient_id = $1 ORDER BY registration_date DESC`,
+      [dbId]
+    );
+    const referredPatients = referredPatientsRows.map(mapPatient);
+
+    // Get the patient's own info to check current credit balance
+    const patient = await this.getPatient(patientId);
+    const availableCredit = patient?.referralCreditBalance ?? 0;
+
+    // Get who referred this patient (if anyone)
+    let referredBy: Patient | undefined = undefined;
+    if (patient?.referredByPatientId) {
+      referredBy = await this.getPatient(patient.referredByPatientId);
+    }
+
+    return {
+      referredPatients,
+      totalReferrals: referredPatients.length,
+      totalCreditEarned: availableCredit,  // Since we don't track usage yet, total = available
+      availableCredit,
+      referredBy,
+    };
+  }
+
+  async updatePatientCreditBalance(patientId: string, additionalCredit: number): Promise<Patient | undefined> {
+    await this.waitForReady();
+    const patient = await this.getPatient(patientId);
+    if (!patient) {
+      return undefined;
+    }
+
+    const newCredit = (patient.referralCreditBalance ?? 0) + additionalCredit;
+
+    const dbId = this.convertId("patients", patientId);
+    const { rows } = await pool.query<DbPatientRow>(
+      `UPDATE patients 
+       SET referral_credit_balance = $1
+       WHERE id = $2
+       RETURNING *`,
+      [newCredit, dbId]
+    );
+
+    // If this patient is also a referrer, update the referrer's available credit
+    const { rows: referrerRows } = await pool.query<DbReferrerRow>(
+      "SELECT * FROM referrers WHERE patient_id = $1",
+      [dbId]
+    );
+
+    if (referrerRows.length > 0) {
+      const referrerId = referrerRows[0].id;
+      // We blindly update available_credit by the same amount
+      // This handles spending (negative additionalCredit) naturally
+      await pool.query(
+        "UPDATE referrers SET available_credit = available_credit + $1 WHERE id = $2",
+        [additionalCredit, referrerId]
+      );
+    }
+
+    if (rows.length > 0) {
+      this.cache.invalidate("patients");
+      this.cache.invalidate(`patient:${normalizeId(patientId)}`);
+      return mapPatient(rows[0]);
+    }
+    return undefined;
+  }
+
+  // Referrer System Implementation
+  async getReferrers(): Promise<Referrer[]> {
+    await this.waitForReady();
+    const { rows } = await pool.query<DbReferrerRow>("SELECT * FROM referrers ORDER BY name ASC");
+    return rows.map(mapReferrer);
+  }
+
+  async getReferrer(id: string): Promise<Referrer | undefined> {
+    await this.waitForReady();
+    const dbId = this.convertId("referrers", id);
+    const { rows } = await pool.query<DbReferrerRow>("SELECT * FROM referrers WHERE id = $1", [dbId]);
+    return rows.length > 0 ? mapReferrer(rows[0]) : undefined;
+  }
+
+  async createReferrer(insertReferrer: InsertReferrer): Promise<Referrer> {
+    await this.waitForReady();
+    const useNumericId = this.idModes.referrers === "numeric";
+    const useNumericPatientId = this.idModes.patients === "numeric";
+
+    // If linking to a patient, get patient details first
+    let patientId = null;
+    if (insertReferrer.isPatient && insertReferrer.patientId) {
+      if (useNumericPatientId) {
+        const parsed = parseInt(insertReferrer.patientId);
+        patientId = isNaN(parsed) ? null : parsed;
+      } else {
+        patientId = insertReferrer.patientId;
+      }
+    }
+
+    const query = useNumericId
+      ? `INSERT INTO referrers (name, phone, is_patient, patient_id, total_credit_earned, available_credit)
+         VALUES ($1, $2, $3, $4, 0, 0)
+         RETURNING *`
+      : `INSERT INTO referrers (id, name, phone, is_patient, patient_id, total_credit_earned, available_credit)
+         VALUES ($1, $2, $3, $4, $5, 0, 0)
+         RETURNING *`;
+
+    const params = useNumericId
+      ? [insertReferrer.name, insertReferrer.phone, insertReferrer.isPatient, patientId]
+      : [randomUUID(), insertReferrer.name, insertReferrer.phone, insertReferrer.isPatient, patientId];
+
+    const { rows } = await pool.query<DbReferrerRow>(query, params);
+    this.cache.invalidate("referrers");
+    return mapReferrer(rows[0]);
+  }
+
+  async updateReferrerCredit(referrerId: string, additionalCredit: number): Promise<Referrer | undefined> {
+    await this.waitForReady();
+    const referrer = await this.getReferrer(referrerId);
+    if (!referrer) return undefined;
+
+    const newTotal = additionalCredit > 0 ? (referrer.totalCreditEarned + additionalCredit) : referrer.totalCreditEarned;
+    const newAvailable = referrer.availableCredit + additionalCredit;
+    console.log(`[ReferralLog] Updating credit for ${referrer.name}: OldAvailable=${referrer.availableCredit}, NewAvailable=${newAvailable}`);
+
+    const dbId = this.convertId("referrers", referrerId);
+    const { rows } = await pool.query<DbReferrerRow>(
+      `UPDATE referrers 
+       SET total_credit_earned = $1, available_credit = $2
+       WHERE id = $3
+       RETURNING *`,
+      [newTotal, newAvailable, dbId]
+    );
+
+    // If this referrer is linked to a patient, update the patient's credit balance too
+    // This helps keep both tables in sync
+    if (referrer.patientId) {
+      const dbPatientId = this.convertId("patients", referrer.patientId);
+      // We don't call updatePatientCreditBalance to avoid potential circular/double logic
+      // Just direct update to sync
+      await pool.query(
+        `UPDATE patients 
+         SET referral_credit_balance = COALESCE(referral_credit_balance, 0) + $1
+         WHERE id = $2`,
+        [additionalCredit, dbPatientId]
+      );
+      this.cache.invalidate(`patient:${normalizeId(referrer.patientId)}`);
+    }
+
+    this.cache.invalidate("referrers");
+    this.cache.invalidate(`referrer:${normalizeId(referrerId)}`);
+
+    return rows.length > 0 ? mapReferrer(rows[0]) : undefined;
+  }
+
+  async getReferrerStats(id: string): Promise<ReferrerStats | undefined> {
+    await this.waitForReady();
+    const referrer = await this.getReferrer(id);
+    if (!referrer) return undefined;
+
+    const dbId = this.convertId("referrers", id);
+    const { rows: patientRows } = await pool.query<DbPatientRow>(
+      "SELECT * FROM patients WHERE referred_by_referrer_id = $1 ORDER BY registration_date DESC",
+      [dbId]
+    );
+
+    const referredPatients = patientRows.map(mapPatient);
+
+    return {
+      ...referrer,
+      totalReferrals: referredPatients.length,
+      referredPatients
+    };
+  }
+
 
   // Visits
   async getVisits(): Promise<Visit[]> {
@@ -956,7 +1346,7 @@ export class PostgresStorage implements IStorage {
   async getVisitsByPatient(patientId: string): Promise<Visit[]> {
     await this.waitForReady();
     const normalizedPatientId = normalizeId(patientId);
-    const cacheKey = `visits: patient: ${normalizedPatientId}`;
+    const cacheKey = `visits: patient: ${normalizedPatientId} `;
     const cached = this.cache.get<Visit[]>(cacheKey);
     if (cached) {
       return cached;
@@ -987,10 +1377,10 @@ export class PostgresStorage implements IStorage {
     const usesNumericVisitId = this.usesNumericId("visits");
     const insertQuery = usesNumericVisitId
       ? `INSERT INTO visits(patient_id, date, complaints, diagnosis, visit_number)
-         VALUES($1, $2, $3, $4, $5)
+VALUES($1, $2, $3, $4, $5)
          RETURNING id, patient_id, date, complaints, diagnosis, visit_number`
       : `INSERT INTO visits(id, patient_id, date, complaints, diagnosis, visit_number)
-         VALUES($1, $2, $3, $4, $5, $6)
+VALUES($1, $2, $3, $4, $5, $6)
          RETURNING id, patient_id, date, complaints, diagnosis, visit_number`;
     const insertParams = usesNumericVisitId
       ? [patientIdValue, insertVisit.date, insertVisit.complaints, insertVisit.diagnosis, visitNumber]
@@ -1016,8 +1406,8 @@ export class PostgresStorage implements IStorage {
     const { rows } = await pool.query<DbVisitRow>(
       `UPDATE visits
        SET date = $2,
-            complaints = $3,
-            diagnosis = $4
+  complaints = $3,
+  diagnosis = $4
        WHERE id = $1
        RETURNING id, patient_id, date, complaints, diagnosis, visit_number`,
       [dbVisitId, insertVisit.date, insertVisit.complaints, insertVisit.diagnosis]
@@ -1072,10 +1462,10 @@ export class PostgresStorage implements IStorage {
     const useNumericId = this.usesNumericId("medicines");
     const query = useNumericId
       ? `INSERT INTO medicines(name, purchase_cost, selling_price, quantity, category, expiry_date)
-          VALUES($1, $2, $3, $4, $5, $6)
+VALUES($1, $2, $3, $4, $5, $6)
          RETURNING id, name, purchase_cost, selling_price, quantity, category, expiry_date`
       : `INSERT INTO medicines(id, name, purchase_cost, selling_price, quantity, category, expiry_date)
-          VALUES($1, $2, $3, $4, $5, $6, $7)
+VALUES($1, $2, $3, $4, $5, $6, $7)
          RETURNING id, name, purchase_cost, selling_price, quantity, category, expiry_date`;
     const params = useNumericId
       ? [insertMedicine.name, insertMedicine.purchaseCost, insertMedicine.sellingPrice, insertMedicine.quantity,
@@ -1095,11 +1485,11 @@ export class PostgresStorage implements IStorage {
     const { rows } = await pool.query<DbMedicineRow>(
       `UPDATE medicines
        SET name = $2,
-            purchase_cost = $3,
-            selling_price = $4,
-            quantity = $5,
-            category = $6,
-            expiry_date = $7
+  purchase_cost = $3,
+  selling_price = $4,
+  quantity = $5,
+  category = $6,
+  expiry_date = $7
        WHERE id = $1
        RETURNING id, name, purchase_cost, selling_price, quantity, category, expiry_date`,
       [dbId, insertMedicine.name, insertMedicine.purchaseCost, insertMedicine.sellingPrice, insertMedicine.quantity,
@@ -1164,10 +1554,10 @@ export class PostgresStorage implements IStorage {
       // Cast to correct types in VALUES clause
       const query = `
         UPDATE medicines as m 
-        SET quantity = GREATEST(0, m.quantity + v.change) 
-        FROM (VALUES ${values}) as v(id, change) 
+        SET quantity = GREATEST(0, m.quantity + v.change)
+FROM(VALUES ${values}) as v(id, change) 
         WHERE m.id = v.id${this.usesNumericId("medicines") ? "" : "::text"}
-      `;
+`;
 
       await client.query(query);
       await client.query("COMMIT");
@@ -1257,10 +1647,10 @@ export class PostgresStorage implements IStorage {
     const useNumericId = this.usesNumericId("treatments");
     const query = useNumericId
       ? `INSERT INTO treatments(name, default_price, gst_percentage, number_of_sittings, category)
-          VALUES($1, $2, $3, $4, $5)
+VALUES($1, $2, $3, $4, $5)
          RETURNING id, name, default_price, gst_percentage, number_of_sittings, category`
       : `INSERT INTO treatments(id, name, default_price, gst_percentage, number_of_sittings, category)
-          VALUES($1, $2, $3, $4, $5, $6)
+VALUES($1, $2, $3, $4, $5, $6)
          RETURNING id, name, default_price, gst_percentage, number_of_sittings, category`;
     const params = useNumericId
       ? [insertTreatment.name, insertTreatment.defaultPrice, insertTreatment.gstPercentage || 0,
@@ -1334,7 +1724,7 @@ export class PostgresStorage implements IStorage {
     }
     const { rows } = await pool.query<DbBillRow>(
       `SELECT id, patient_id, patient_name, date, treatments, medicines,
-            treatment_total, medicine_total, grand_total, amount_paid, pending_amount
+  treatment_total, medicine_total, grand_total, amount_paid, pending_amount
        FROM bills
        ORDER BY date DESC`
     );
@@ -1354,7 +1744,7 @@ export class PostgresStorage implements IStorage {
     const dbId = this.convertId("bills", id);
     const { rows } = await pool.query<DbBillRow>(
       `SELECT id, patient_id, patient_name, date, treatments, medicines,
-            treatment_total, medicine_total, grand_total, amount_paid, pending_amount
+  treatment_total, medicine_total, grand_total, amount_paid, pending_amount
        FROM bills
        WHERE id = $1`,
       [dbId]
@@ -1374,36 +1764,36 @@ export class PostgresStorage implements IStorage {
       const useNumericId = this.usesNumericId("bills");
       const query = useNumericId
         ? `INSERT INTO bills(
-              patient_id,
-              patient_name,
-              date,
-              treatments,
-              medicines,
-              treatment_total,
-              medicine_total,
-              grand_total,
-              amount_paid,
-              pending_amount
-            )
-          VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+    patient_id,
+    patient_name,
+    date,
+    treatments,
+    medicines,
+    treatment_total,
+    medicine_total,
+    grand_total,
+    amount_paid,
+    pending_amount
+  )
+VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
         RETURNING id, patient_id, patient_name, date, treatments, medicines,
-            treatment_total, medicine_total, grand_total, amount_paid, pending_amount`
+  treatment_total, medicine_total, grand_total, amount_paid, pending_amount`
         : `INSERT INTO bills(
-              id,
-              patient_id,
-              patient_name,
-              date,
-              treatments,
-              medicines,
-              treatment_total,
-              medicine_total,
-              grand_total,
-              amount_paid,
-              pending_amount
-            )
-          VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+    id,
+    patient_id,
+    patient_name,
+    date,
+    treatments,
+    medicines,
+    treatment_total,
+    medicine_total,
+    grand_total,
+    amount_paid,
+    pending_amount
+  )
+VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
         RETURNING id, patient_id, patient_name, date, treatments, medicines,
-            treatment_total, medicine_total, grand_total, amount_paid, pending_amount`;
+  treatment_total, medicine_total, grand_total, amount_paid, pending_amount`;
       const params = useNumericId
         ? [
           patientIdValue,
@@ -1435,6 +1825,62 @@ export class PostgresStorage implements IStorage {
         throw new Error("Failed to create bill - no rows returned");
       }
       const bill = mapBill(rows[0]);
+
+      // **REFERRAL CREDIT SYSTEM - PART 1**: Award credit to referrer if this is the first bill
+      const patient = await this.getPatient(insertBill.patientId);
+
+      // Check for Enhanced Referrer first
+      if (patient && patient.referredByReferrerId && !patient.firstBillProcessed) {
+        // Calculate 5% of the grand total as referral credit
+        const referralCredit = insertBill.grandTotal * 0.05;
+
+        // Add credit to the REFERRER (this will sync to patient record if applicable)
+        await this.updateReferrerCredit(patient.referredByReferrerId, referralCredit);
+
+        // Mark this patient's first bill as processed
+        const dbPatientId = this.convertId("patients", insertBill.patientId);
+        await pool.query(
+          `UPDATE patients SET first_bill_processed = TRUE WHERE id = $1`,
+          [dbPatientId]
+        );
+
+        this.cache.invalidate("patients");
+        this.cache.invalidate(`patient:${normalizeId(insertBill.patientId)}`);
+      }
+      // Fallback to legacy patient referral if no modern referrer is set
+      else if (patient && patient.referredByPatientId && !patient.firstBillProcessed) {
+        // Calculate 5% of the grand total as referral credit
+        const referralCredit = insertBill.grandTotal * 0.05;
+
+        // Add credit to the referring patient
+        await this.updatePatientCreditBalance(patient.referredByPatientId, referralCredit);
+
+        // Mark this patient's first bill as processed
+        const dbPatientId = this.convertId("patients", insertBill.patientId);
+        await pool.query(
+          `UPDATE patients SET first_bill_processed = TRUE WHERE id = $1`,
+          [dbPatientId]
+        );
+
+        // Invalidate patient cache
+        this.cache.invalidate("patients");
+        this.cache.invalidate(`patient:${normalizeId(insertBill.patientId)}`);
+      }
+
+      // **REFERRAL CREDIT SYSTEM - PART 2**: Deduct credit from current patient if they used it
+      if (patient && patient.referralCreditBalance && patient.referralCreditBalance > 0) {
+        // Calculate how much credit was applied to this bill
+        // The frontend calculates: creditToApply = Math.min(availableCredit, subtotal)
+        // We need to reconstruct the subtotal to determine credit used
+        const subtotal = insertBill.treatmentTotal + insertBill.medicineTotal;
+        const creditUsed = Math.min(patient.referralCreditBalance, subtotal);
+
+        // Only deduct if credit was actually applied (grandTotal < subtotal)
+        if (insertBill.grandTotal < subtotal) {
+          await this.updatePatientCreditBalance(insertBill.patientId, -creditUsed);
+        }
+      }
+
       this.cache.invalidate("bills");
       this.cache.invalidate("bill:");
       return bill;
@@ -1451,18 +1897,18 @@ export class PostgresStorage implements IStorage {
     const { rows } = await pool.query<DbBillRow>(
       `UPDATE bills
        SET patient_id = $2,
-            patient_name = $3,
-            date = $4,
-            treatments = $5,
-            medicines = $6,
-            treatment_total = $7,
-            medicine_total = $8,
-            grand_total = $9,
-            amount_paid = $10,
-            pending_amount = $11
+  patient_name = $3,
+  date = $4,
+  treatments = $5,
+  medicines = $6,
+  treatment_total = $7,
+  medicine_total = $8,
+  grand_total = $9,
+  amount_paid = $10,
+  pending_amount = $11
        WHERE id = $1
        RETURNING id, patient_id, patient_name, date, treatments, medicines,
-            treatment_total, medicine_total, grand_total, amount_paid, pending_amount`,
+  treatment_total, medicine_total, grand_total, amount_paid, pending_amount`,
       [
         dbId,
         this.convertId("patients", insertBill.patientId),
@@ -1491,10 +1937,10 @@ export class PostgresStorage implements IStorage {
     const { rows } = await pool.query<DbBillRow>(
       `UPDATE bills
        SET amount_paid = $2,
-            pending_amount = GREATEST(0, grand_total - $2)
+  pending_amount = GREATEST(0, grand_total - $2)
        WHERE id = $1
        RETURNING id, patient_id, patient_name, date, treatments, medicines,
-            treatment_total, medicine_total, grand_total, amount_paid, pending_amount`,
+  treatment_total, medicine_total, grand_total, amount_paid, pending_amount`,
       [dbId, amountPaid]
     );
     const bill = rows[0] ? mapBill(rows[0]) : undefined;
@@ -1508,6 +1954,38 @@ export class PostgresStorage implements IStorage {
   async deleteBill(id: string): Promise<boolean> {
     await this.waitForReady();
     const dbId = this.convertId("bills", id);
+
+    // **REFERRAL CREDIT SYSTEM**: Reverse credit if the FIRST bill is deleted
+    try {
+      const bill = await this.getBill(id);
+      if (bill) {
+        const patient = await this.getPatient(bill.patientId);
+        if (patient && patient.firstBillProcessed && patient.referredByReferrerId) {
+          // Check if this is the first bill
+          const { rows: otherBills } = await pool.query<DbBillRow>(
+            "SELECT id FROM bills WHERE patient_id = $1 ORDER BY date ASC, id ASC LIMIT 1",
+            [this.convertId("patients", bill.patientId)]
+          );
+
+          if (otherBills.length > 0 && otherBills[0].id.toString() === dbId.toString()) {
+            // This is the first bill! Reverse credit.
+            const referralCredit = bill.grandTotal * 0.05;
+            await this.updateReferrerCredit(patient.referredByReferrerId, -referralCredit);
+
+            // Reset first_bill_processed flag
+            await pool.query(
+              "UPDATE patients SET first_bill_processed = false WHERE id = $1",
+              [this.convertId("patients", bill.patientId)]
+            );
+            this.cache.invalidate("patients");
+            this.cache.invalidate("patient:");
+          }
+        }
+      }
+    } catch (err: any) {
+      console.error("Error reversing referral credit in deleteBill:", err.message);
+    }
+
     const result = await pool.query("DELETE FROM bills WHERE id = $1", [dbId]);
     const success = (result.rowCount ?? 0) > 0;
     if (success) {
@@ -1568,10 +2046,10 @@ export class PostgresStorage implements IStorage {
     const useNumericId = this.usesNumericId("expenses");
     const query = useNumericId
       ? `INSERT INTO expenses(description, amount, date, category)
-          VALUES($1, $2, $3, $4)
+VALUES($1, $2, $3, $4)
          RETURNING id, description, amount, date, category`
       : `INSERT INTO expenses(id, description, amount, date, category)
-          VALUES($1, $2, $3, $4, $5)
+VALUES($1, $2, $3, $4, $5)
          RETURNING id, description, amount, date, category`;
     const params = useNumericId
       ? [insertExpense.description, insertExpense.amount, insertExpense.date, insertExpense.category]
@@ -1595,9 +2073,9 @@ export class PostgresStorage implements IStorage {
     const { rows } = await pool.query<DbExpenseRow>(
       `UPDATE expenses
        SET description = $2,
-            amount = $3,
-            date = $4,
-            category = $5
+  amount = $3,
+  date = $4,
+  category = $5
        WHERE id = $1
        RETURNING id, description, amount, date, category`,
       [dbId, insertExpense.description, insertExpense.amount, insertExpense.date, insertExpense.category]
@@ -1659,27 +2137,28 @@ export class PostgresStorage implements IStorage {
     if (search && search.trim()) {
       // ILIKE for case-insensitive search in PostgreSQL
       whereClause = "WHERE name ILIKE $1 OR phone ILIKE $1";
-      params.push(`%${search.trim()}%`);
+      params.push(`% ${search.trim()}% `);
     }
 
     // First query: Get total count for pagination info
-    const countQuery = `SELECT COUNT(*) as count FROM patients ${whereClause}`;
+    const countQuery = `SELECT COUNT(*) as count FROM patients ${whereClause} `;
     const { rows: countResult } = await pool.query<{ count: string }>(countQuery, params);
     const total = parseInt(countResult[0]?.count || "0", 10);
 
     // Second query: Get paginated data with dynamic parameter positions
     const dataParams = search && search.trim()
-      ? [`%${search.trim()}%`, limit, offset]
+      ? [`% ${search.trim()}% `, limit, offset]
       : [limit, offset];
     const limitParam = search && search.trim() ? "$2" : "$1";
     const offsetParam = search && search.trim() ? "$3" : "$2";
 
     const { rows } = await pool.query<DbPatientRow>(
-      `SELECT id, name, phone, registration_date, chief_dental_complaint, dental_history, 
-              habit_history, allergies, last_dental_visit_date 
+      `SELECT id, name, phone, registration_date, chief_dental_complaint, dental_history,
+        habit_history, allergies, last_dental_visit_date, referred_by_referrer_id,
+        referred_by_patient_id, referral_credit_balance, first_bill_processed
        FROM patients ${whereClause}
        ORDER BY registration_date DESC 
-       LIMIT ${limitParam} OFFSET ${offsetParam}`,
+       LIMIT ${limitParam} OFFSET ${offsetParam} `,
       dataParams
     );
     const data = rows.map(mapPatient);
@@ -1707,7 +2186,7 @@ export class PostgresStorage implements IStorage {
   async getTodaysPatientsCount(): Promise<number> {
     await this.waitForReady();
     const today = new Date().toISOString().split('T')[0]; // YYYY-MM-DD format
-    const cacheKey = `patients:today:${today}`;
+    const cacheKey = `patients: today:${today} `;
     const cached = this.cache.get<number>(cacheKey);
     if (cached !== undefined) {
       return cached;
@@ -1774,7 +2253,7 @@ export class PostgresStorage implements IStorage {
 
     const { rows } = await pool.query<DbBillRow>(
       `SELECT id, patient_id, patient_name, date, treatments, medicines,
-            treatment_total, medicine_total, grand_total, amount_paid, pending_amount
+  treatment_total, medicine_total, grand_total, amount_paid, pending_amount
        FROM bills
        ORDER BY date DESC
        LIMIT $1 OFFSET $2`,
@@ -1825,7 +2304,7 @@ export class PostgresStorage implements IStorage {
   async getAppointment(id: string): Promise<Appointment | undefined> {
     await this.waitForReady();
     const normalizedId = normalizeId(id);
-    const cacheKey = `appointment:${normalizedId}`;
+    const cacheKey = `appointment:${normalizedId} `;
     const cached = this.cache.get<Appointment>(cacheKey);
     if (cached) {
       return cached;
@@ -1848,7 +2327,7 @@ export class PostgresStorage implements IStorage {
   async getAppointmentsByPatient(patientId: string): Promise<Appointment[]> {
     await this.waitForReady();
     const normalizedPatientId = normalizeId(patientId);
-    const cacheKey = `appointments:patient:${normalizedPatientId}`;
+    const cacheKey = `appointments: patient:${normalizedPatientId} `;
     const cached = this.cache.get<Appointment[]>(cacheKey);
     if (cached) {
       return cached;
@@ -1872,10 +2351,10 @@ export class PostgresStorage implements IStorage {
     const useNumericId = this.usesNumericId("appointments");
     const query = useNumericId
       ? `INSERT INTO appointments(patient_id, date, reason, status)
-         VALUES($1, $2, $3, $4)
+VALUES($1, $2, $3, $4)
          RETURNING id, patient_id, date, reason, status`
       : `INSERT INTO appointments(id, patient_id, date, reason, status)
-         VALUES($1, $2, $3, $4, $5)
+VALUES($1, $2, $3, $4, $5)
          RETURNING id, patient_id, date, reason, status`;
 
     const dbPatientId = this.convertId("patients", insert.patientId);
@@ -1896,7 +2375,7 @@ export class PostgresStorage implements IStorage {
     });
 
     this.cache.invalidate("appointments");
-    this.cache.invalidate(`appointments:patient:${normalizeId(insert.patientId)}`);
+    this.cache.invalidate(`appointments: patient:${normalizeId(insert.patientId)} `);
     return appointment;
   }
 
@@ -1925,8 +2404,8 @@ export class PostgresStorage implements IStorage {
     });
 
     this.cache.invalidate("appointments");
-    this.cache.invalidate(`appointment:${appointment.id}`);
-    this.cache.invalidate(`appointments:patient:${normalizeId(insert.patientId)}`);
+    this.cache.invalidate(`appointment:${appointment.id} `);
+    this.cache.invalidate(`appointments: patient:${normalizeId(insert.patientId)} `);
     return appointment;
   }
 
@@ -1942,9 +2421,9 @@ export class PostgresStorage implements IStorage {
 
     if (success) {
       this.cache.invalidate("appointments");
-      this.cache.invalidate(`appointment:${normalizeId(id)}`);
+      this.cache.invalidate(`appointment:${normalizeId(id)} `);
       if (appt) {
-        this.cache.invalidate(`appointments:patient:${appt.patientId}`);
+        this.cache.invalidate(`appointments: patient:${appt.patientId} `);
       }
     }
     return success;
@@ -1959,8 +2438,8 @@ export class PostgresStorage implements IStorage {
     await this.waitForReady();
     const dbPatientId = this.convertId("patients", patientId);
     const { rows } = await pool.query<DbToothRecordRow>(
-      `SELECT id, patient_id, tooth_number, quadrant, condition, notes, treatment_id, 
-              created_at, updated_at 
+      `SELECT id, patient_id, tooth_number, quadrant, condition, notes, treatment_id,
+  created_at, updated_at 
        FROM tooth_records 
        WHERE patient_id = $1 
        ORDER BY tooth_number ASC`,
@@ -1973,8 +2452,8 @@ export class PostgresStorage implements IStorage {
     await this.waitForReady();
     const dbId = this.convertId("tooth_records", id);
     const { rows } = await pool.query<DbToothRecordRow>(
-      `SELECT id, patient_id, tooth_number, quadrant, condition, notes, treatment_id, 
-              created_at, updated_at 
+      `SELECT id, patient_id, tooth_number, quadrant, condition, notes, treatment_id,
+  created_at, updated_at 
        FROM tooth_records 
        WHERE id = $1`,
       [dbId]
@@ -1989,14 +2468,14 @@ export class PostgresStorage implements IStorage {
 
     const useNumericId = this.usesNumericId("tooth_records");
     const query = useNumericId
-      ? `INSERT INTO tooth_records (patient_id, tooth_number, quadrant, condition, notes, treatment_id)
-         VALUES ($1, $2, $3, $4, $5, $6)
-         ON CONFLICT (patient_id, tooth_number) 
+      ? `INSERT INTO tooth_records(patient_id, tooth_number, quadrant, condition, notes, treatment_id)
+VALUES($1, $2, $3, $4, $5, $6)
+         ON CONFLICT(patient_id, tooth_number) 
          DO UPDATE SET condition = EXCLUDED.condition, notes = EXCLUDED.notes, updated_at = NOW()
          RETURNING id, patient_id, tooth_number, quadrant, condition, notes, treatment_id, created_at, updated_at`
-      : `INSERT INTO tooth_records (id, patient_id, tooth_number, quadrant, condition, notes, treatment_id)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (patient_id, tooth_number) 
+      : `INSERT INTO tooth_records(id, patient_id, tooth_number, quadrant, condition, notes, treatment_id)
+VALUES($1, $2, $3, $4, $5, $6, $7)
+         ON CONFLICT(patient_id, tooth_number) 
          DO UPDATE SET condition = EXCLUDED.condition, notes = EXCLUDED.notes, updated_at = NOW()
          RETURNING id, patient_id, tooth_number, quadrant, condition, notes, treatment_id, created_at, updated_at`;
 
@@ -2036,9 +2515,9 @@ export class PostgresStorage implements IStorage {
     await this.waitForReady();
     const dbPatientId = this.convertId("patients", patientId);
     const { rows } = await pool.query<DbTreatmentSittingRow>(
-      `SELECT id, patient_id, treatment_id, treatment_name, bill_id, tooth_numbers, 
-              total_sittings, completed_sittings, status, sitting_details, 
-              start_date, last_visit_date, notes
+      `SELECT id, patient_id, treatment_id, treatment_name, bill_id, tooth_numbers,
+  total_sittings, completed_sittings, status, sitting_details,
+  start_date, last_visit_date, notes
        FROM treatment_sittings 
        WHERE patient_id = $1 
        ORDER BY start_date DESC`,
@@ -2051,9 +2530,9 @@ export class PostgresStorage implements IStorage {
     await this.waitForReady();
     const dbId = this.convertId("treatment_sittings", id);
     const { rows } = await pool.query<DbTreatmentSittingRow>(
-      `SELECT id, patient_id, treatment_id, treatment_name, bill_id, tooth_numbers, 
-              total_sittings, completed_sittings, status, sitting_details, 
-              start_date, last_visit_date, notes
+      `SELECT id, patient_id, treatment_id, treatment_name, bill_id, tooth_numbers,
+  total_sittings, completed_sittings, status, sitting_details,
+  start_date, last_visit_date, notes
        FROM treatment_sittings 
        WHERE id = $1`,
       [dbId]
@@ -2069,16 +2548,16 @@ export class PostgresStorage implements IStorage {
 
     const useNumericId = this.usesNumericId("treatment_sittings");
     const query = useNumericId
-      ? `INSERT INTO treatment_sittings 
-         (patient_id, treatment_id, treatment_name, bill_id, tooth_numbers, total_sittings, 
-          completed_sittings, status, sitting_details, start_date, last_visit_date, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
-         RETURNING *`
-      : `INSERT INTO treatment_sittings 
-         (id, patient_id, treatment_id, treatment_name, bill_id, tooth_numbers, total_sittings, 
-          completed_sittings, status, sitting_details, start_date, last_visit_date, notes)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
-         RETURNING *`;
+      ? `INSERT INTO treatment_sittings
+  (patient_id, treatment_id, treatment_name, bill_id, tooth_numbers, total_sittings,
+    completed_sittings, status, sitting_details, start_date, last_visit_date, notes)
+VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+RETURNING * `
+      : `INSERT INTO treatment_sittings
+  (id, patient_id, treatment_id, treatment_name, bill_id, tooth_numbers, total_sittings,
+    completed_sittings, status, sitting_details, start_date, last_visit_date, notes)
+VALUES($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+RETURNING * `;
 
     const params = useNumericId
       ? [patientIdValue, treatmentIdValue, sitting.treatmentName, billIdValue,
@@ -2120,10 +2599,10 @@ export class PostgresStorage implements IStorage {
     const { rows } = await pool.query<DbTreatmentSittingRow>(
       `UPDATE treatment_sittings 
        SET treatment_name = $2, bill_id = $3, tooth_numbers = $4, total_sittings = $5,
-           completed_sittings = $6, status = $7, sitting_details = $8, 
-           last_visit_date = $9, notes = $10
+  completed_sittings = $6, status = $7, sitting_details = $8,
+  last_visit_date = $9, notes = $10
        WHERE id = $1
-       RETURNING *`,
+RETURNING * `,
       [dbId, merged.treatmentName, billIdValue, JSON.stringify(merged.toothNumbers),
         merged.totalSittings, merged.completedSittings, merged.status,
         JSON.stringify(merged.sittingDetails), merged.lastVisitDate || null, merged.notes || null]
@@ -2141,11 +2620,11 @@ export class PostgresStorage implements IStorage {
   async getPendingSittings(): Promise<TreatmentSitting[]> {
     await this.waitForReady();
     const { rows } = await pool.query<DbTreatmentSittingRow>(
-      `SELECT id, patient_id, treatment_id, treatment_name, bill_id, tooth_numbers, 
-              total_sittings, completed_sittings, status, sitting_details, 
-              start_date, last_visit_date, notes
+      `SELECT id, patient_id, treatment_id, treatment_name, bill_id, tooth_numbers,
+  total_sittings, completed_sittings, status, sitting_details,
+  start_date, last_visit_date, notes
        FROM treatment_sittings 
-       WHERE status IN ('Planned', 'InProgress')
+       WHERE status IN('Planned', 'InProgress')
        ORDER BY start_date ASC`
     );
     return rows.map(mapTreatmentSitting);

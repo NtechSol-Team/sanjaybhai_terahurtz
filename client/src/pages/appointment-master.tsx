@@ -261,7 +261,7 @@ export default function AppointmentMaster() {
         const formattedDate = format(new Date(appointment.date), "dd MMMM yyyy");
 
         // Clinic settings (configurable defaults)
-        const clinicName = "Dent Care Clinic"; // TODO: Make configurable from system settings
+        const clinicName = "TeraCare"; // TODO: Make configurable from system settings
         const arriveMinutes = 10; // TODO: Make configurable
 
         // Generate message

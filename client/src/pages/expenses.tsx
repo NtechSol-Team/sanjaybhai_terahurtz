@@ -71,10 +71,10 @@ type ExpenseForm = z.infer<typeof expenseFormSchema>;
 const EXPENSE_CATEGORIES = [
   "Rent",
   "Salaries",
-  "Dental Materials",
+  "Therapy Materials",
   "Lab Fees",
   "Equipment Maintenance",
-  "Dental Supplies",
+  "Therapy Supplies",
   "Utilities",
   "Marketing",
   "Insurance",

@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
 import cors from "cors";
 import compression from "compression";
@@ -13,6 +14,7 @@ const app = express();
 
 // When running behind a proxy (e.g. Render, Heroku), enable trust proxy
 // so Express knows the original request protocol (https)
+// Forced restart check
 if (process.env.NODE_ENV === "production") {
   app.set("trust proxy", 1);
 }

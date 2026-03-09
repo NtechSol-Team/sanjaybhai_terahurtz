@@ -18,6 +18,7 @@ const Medicines = lazy(() => import("@/pages/medicines"));
 const Treatments = lazy(() => import("@/pages/treatments"));
 const Expenses = lazy(() => import("@/pages/expenses"));
 const AppointmentMaster = lazy(() => import("@/pages/appointment-master"));
+const Referrals = lazy(() => import("@/pages/referrals"));
 const Reports = lazy(() => import("@/pages/reports"));
 const NotFound = lazy(() => import("@/pages/not-found"));
 
@@ -68,6 +69,7 @@ function Router() {
         <Route path="/treatments" component={() => <ProtectedRoute component={Treatments} />} />
         <Route path="/expenses" component={() => <ProtectedRoute component={Expenses} />} />
         <Route path="/appointments" component={() => <ProtectedRoute component={AppointmentMaster} />} />
+        <Route path="/referrals" component={() => <ProtectedRoute component={Referrals} />} />
         <Route path="/reports" component={() => <ProtectedRoute component={Reports} />} />
 
         {/* Fallback */}

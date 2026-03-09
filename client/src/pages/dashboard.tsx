@@ -165,7 +165,7 @@ export default function Dashboard() {
           Dashboard
         </h1>
         <p className="text-muted-foreground">
-          Overview of your dental practice activity and patient records
+          Overview of your therapy practice activity and patient records
         </p>
       </div>
 

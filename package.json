@@ -8,7 +8,9 @@
     "build": "tsx script/build.ts",
     "start": "NODE_ENV=production node dist/index.cjs",
     "check": "tsc",
-    "db:push": "drizzle-kit push"
+    "db:push": "drizzle-kit push:pg",
+    "check-db": "tsx script/check-db.ts",
+    "check-referrers": "tsx script/check-referrers.ts"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",
@@ -103,6 +105,7 @@
     "@vitejs/plugin-react": "^4.7.0",
     "autoprefixer": "^10.4.20",
     "cross-env": "^10.1.0",
+    "dotenv": "^17.3.1",
     "drizzle-kit": "^0.31.7",
     "esbuild": "^0.25.0",
     "postcss": "^8.4.47",

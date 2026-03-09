@@ -358,9 +358,9 @@ export default function BillingManage() {
       <div class="container">
         <div class="header">
         <div class="logo">
-          <img src="/logo.png" alt="Clinic Care Logo" />
+          <img src="/final-logo.png" alt="TeraCare Logo" />
         </div>
-        <div class="clinic-name">CLINIC CARE</div>
+        <div class="clinic-name">TeraCare</div>
         <div class="clinic-tag">Professional Healthcare Management System</div>
         </div>
 
@@ -443,7 +443,7 @@ export default function BillingManage() {
         `}
 
         <div class="footer">
-        <p>Thank you for choosing Clinic Care</p>
+        <p>Thank you for choosing TeraCare</p>
         <p>For queries, please contact us during business hours</p>
         </div>
 

@@ -21,33 +21,67 @@ export const loginSchema = z.object({
 
 export type LoginInput = z.infer<typeof loginSchema>;
 
-// Patient Schema - Extended for Dental Clinics
+// Patient Schema
 export interface Patient {
   id: string;
   name: string;
   phone: string;
   registrationDate: string;
-  // Dental-specific fields (optional)
-  chiefDentalComplaint?: string;
-  dentalHistory?: string;
-  habitHistory?: string; // tobacco, gutkha, smoking
-  allergies?: string; // especially local anesthesia
-  lastDentalVisitDate?: string;
+  // Referral system fields
+  referredByPatientId?: string;  // ID of patient who referred this one (legacy - being migrated to referrers)
+  referredByReferrerId?: string;  // ID of referrer (patient or non-patient) who referred this one
+  referralCreditBalance?: number;  // Money earned from referrals (can be used to pay bills)
+  firstBillProcessed?: boolean;  // Track if this patient's first bill has rewarded the referrer
 }
 
 export const insertPatientSchema = z.object({
-  name: z.string().min(1, "Patient name is required"),
+  name: z.string().min(1, "Name is required"),
   phone: z.string().min(10, "Phone number must be at least 10 digits"),
   registrationDate: z.string(),
-  // Optional dental fields
-  chiefDentalComplaint: z.string().optional(),
-  dentalHistory: z.string().optional(),
-  habitHistory: z.string().optional(),
-  allergies: z.string().optional(),
-  lastDentalVisitDate: z.string().optional(),
+  // Referral system
+  referredByPatientId: z.string().optional(),  // Legacy field
+  referredByReferrerId: z.string().optional(),  // New referrer-based system
+  referralCreditBalance: z.number().optional(),
+  firstBillProcessed: z.boolean().optional(),
 });
 
 export type InsertPatient = z.infer<typeof insertPatientSchema>;
+
+// Referrer System - supports both patient and non-patient referrers
+export interface Referrer {
+  id: string;
+  name: string;
+  phone?: string;
+  isPatient: boolean;  // true if this referrer is also a patient
+  patientId?: string;  // link to patient record if applicable
+  totalCreditEarned: number;
+  availableCredit: number;
+  createdAt: string;
+}
+
+export const insertReferrerSchema = z.object({
+  name: z.string().min(1, "Name is required"),
+  phone: z.string().optional(),
+  isPatient: z.boolean().default(false),
+  patientId: z.string().optional(),
+});
+
+export type InsertReferrer = z.infer<typeof insertReferrerSchema>;
+
+export interface ReferrerStats extends Referrer {
+  totalReferrals: number;
+  referredPatients: Patient[];
+}
+
+
+// Referral system support
+export interface PatientReferralInfo {
+  referredPatients: Patient[];  // Patients referred by this patient
+  totalReferrals: number;
+  totalCreditEarned: number;  // Total credit earned from referrals
+  availableCredit: number;  // Current available credit balance
+  referredBy?: Patient;  // The patient who referred this one (if any)
+}
 
 // Visit Schema
 export interface Visit {
@@ -394,30 +428,7 @@ export const INVENTORY_CATEGORIES = [
   "Equipment",
 ] as const;
 
-export const CHIEF_DENTAL_COMPLAINTS = [
-  "Tooth pain",
-  "Sensitivity",
-  "Bleeding gums",
-  "Swelling",
-  "Bad breath",
-  "Broken tooth",
-  "Cavity",
-  "Loose tooth",
-  "Teeth cleaning",
-  "Cosmetic concern",
-  "Regular checkup",
-  "Other",
-] as const;
-
-export const HABIT_HISTORY_OPTIONS = [
-  "Tobacco chewing",
-  "Gutkha",
-  "Pan Masala",
-  "Smoking",
-  "Alcohol",
-  "Betel nut",
-  "None",
-] as const;
+// Dental-specific constants removed - no longer needed after schema simplification
 
 export const COMMON_DENTAL_TREATMENTS = [
   { name: "Consultation", defaultPrice: 500, gstPercentage: 0, numberOfSittings: 1, category: "Diagnostic" },
@@ -436,3 +447,23 @@ export const COMMON_DENTAL_TREATMENTS = [
   { name: "Orthodontic Treatment (Ceramic)", defaultPrice: 50000, gstPercentage: 0, numberOfSittings: 12, category: "Orthodontic" },
   { name: "Bleaching (Office)", defaultPrice: 8000, gstPercentage: 18, numberOfSittings: 1, category: "Cosmetic" },
 ] as const;
+
+// Body Chart Record
+export interface BodyRecord {
+  id: string;
+  patientId: string;
+  bodyPart: string;
+  painLevel?: number;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export const insertBodyRecordSchema = z.object({
+  patientId: z.string().min(1, "Patient ID is required"),
+  bodyPart: z.string().min(1, "Body part ID is required"),
+  painLevel: z.number().min(0).max(10).optional(),
+  notes: z.string().optional(),
+});
+
+export type InsertBodyRecord = z.infer<typeof insertBodyRecordSchema>;

@@ -53,12 +53,13 @@ import {
   FormMessage,
 } from "@/components/ui/form";
 import { useToast } from "@/hooks/use-toast";
-import type { Patient, Visit, ToothRecord } from "@shared/schema";
+import type { Visit, Medicine, InsertVisit, Patient, InsertPatient, PatientReferralInfo, ToothRecord, BodyRecord, InsertBodyRecord } from "@shared/schema";
 import { insertVisitSchema, insertPatientSchema, TOOTH_CONDITIONS } from "@shared/schema";
 import { apiRequest } from "@/lib/queryClient";
 import { format, isValid } from "date-fns";
 import { z } from "zod";
-import { ToothChart } from "@/components/dental/tooth-chart";
+import { BodyChart } from "@/components/medical/body-chart";
+// import { ToothChart } from "@/components/dental/tooth-chart";
 import { TreatmentProgress } from "@/components/dental/treatment-progress";
 import { DentalPrescription } from "@/components/dental/prescription";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -76,6 +77,87 @@ const updateToothSchema = z.object({
 
 type AddVisitForm = z.infer<typeof addVisitSchema>;
 type UpdateToothForm = z.infer<typeof updateToothSchema>;
+
+// Referral Information Card Component
+function ReferralInfoCard({ patientId }: { patientId: string }) {
+  const { data: referralInfo, isLoading } = useQuery<PatientReferralInfo>({
+    queryKey: [`/api/patients/${patientId}/referrals`],
+    queryFn: async () => {
+      const res = await apiRequest("GET", `/api/patients/${patientId}/referrals`);
+      return res.json();
+    },
+  });
+
+  if (isLoading) {
+    return (
+      <Card>
+        <CardHeader>
+          <Skeleton className="h-6 w-48" />
+        </CardHeader>
+        <CardContent>
+          <Skeleton className="h-20 w-full" />
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!referralInfo) return null;
+
+  const hasReferrals = referralInfo.totalReferrals > 0;
+  const hasCredit = referralInfo.availableCredit > 0;
+
+  return (
+    <Card className="bg-gradient-to-br from-primary/5 to-primary/10 border-primary/20">
+      <CardHeader>
+        <div className="flex items-center justify-between">
+          <CardTitle className="flex items-center gap-2 text-lg">
+            <User className="w-5 h-5 text-primary" />
+            Referral Information
+          </CardTitle>
+          {hasCredit && (
+            <Badge variant="default" className="text-sm">
+              ₹{referralInfo.availableCredit.toFixed(2)} Credit Available
+            </Badge>
+          )}
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        {referralInfo.referredBy && (
+          <div className="p-3 bg-background/50 rounded-lg border">
+            <p className="text-sm text-muted-foreground mb-1">Referred By</p>
+            <p className="font-semibold">{referralInfo.referredBy.name}</p>
+            <p className="text-sm text-muted-foreground">{referralInfo.referredBy.phone}</p>
+          </div>
+        )}
+
+        <div>
+          <p className="text-sm text-muted-foreground mb-2">
+            Patients Referred ({referralInfo.totalReferrals})
+          </p>
+          {hasReferrals ? (
+            <div className="space-y-2">
+              {referralInfo.referredPatients.map((patient) => (
+                <div key={patient.id} className="flex justify-between items-center p-2 bg-background/50 rounded border">
+                  <div>
+                    <p className="font-medium text-sm">{patient.name}</p>
+                    <p className="text-xs text-muted-foreground">{patient.phone}</p>
+                  </div>
+                  <Badge variant="outline" className="text-xs">
+                    {format(new Date(patient.registrationDate), "dd MMM yyyy")}
+                  </Badge>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-sm text-muted-foreground italic">
+              No referrals yet. Earn 5% credit from each referred patient's first bill!
+            </p>
+          )}
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
 
 export default function PatientDetails() {
   const [, params] = useRoute("/patient/:id");
@@ -99,12 +181,63 @@ export default function PatientDetails() {
     enabled: !!patientId,
   });
 
-  const { data: toothRecords = [], isLoading: toothRecordsLoading } = useQuery<ToothRecord[]>({
-    queryKey: ["/api/patients", patientId, "tooth-records"],
+  const { data: bodyRecords = [] } = useQuery<BodyRecord[]>({
+    queryKey: ["/api/patients", patientId, "body-records"],
     enabled: !!patientId,
   });
 
-  const [selectedTooth, setSelectedTooth] = useState<number | null>(null);
+  const createBodyRecordMutation = useMutation({
+    mutationFn: async (bodyPart: string) => {
+      await apiRequest("POST", "/api/body-records", {
+        patientId,
+        bodyPart,
+        painLevel: 1, // Default value
+        notes: "",
+      });
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/patients", patientId, "body-records"] });
+      toast({
+        title: "Body Part Recorded",
+        description: "The body part selection has been saved.",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to save body part selection.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  const deleteBodyRecordMutation = useMutation({
+    mutationFn: async (bodyPart: string) => {
+      await apiRequest("DELETE", `/api/patients/${patientId}/body-records/${bodyPart}`);
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ["/api/patients", patientId, "body-records"] });
+      toast({
+        title: "Body Part Removed",
+        description: "The body part selection has been removed.",
+      });
+    },
+    onError: () => {
+      toast({
+        title: "Error",
+        description: "Failed to remove body part selection.",
+        variant: "destructive",
+      });
+    },
+  });
+
+  // const { data: toothRecords = [], isLoading: toothRecordsLoading } = useQuery<ToothRecord[]>({
+  //   queryKey: ["/api/patients", patientId, "tooth-records"],
+  //   enabled: !!patientId,
+  // });
+
+  const [selectedPart, setSelectedPart] = useState<string | null>(null);
+  // const [selectedTooth, setSelectedTooth] = useState<number | null>(null);
 
   const form = useForm<AddVisitForm>({
     resolver: zodResolver(addVisitSchema),
@@ -126,14 +259,10 @@ export default function PatientDetails() {
   const patientForm = useForm<z.infer<typeof insertPatientSchema>>({
     resolver: zodResolver(insertPatientSchema),
     defaultValues: {
-      name: patient?.name || "",
-      phone: patient?.phone || "",
-      registrationDate: patient?.registrationDate || format(new Date(), "yyyy-MM-dd"),
-      chiefDentalComplaint: patient?.chiefDentalComplaint || "",
-      dentalHistory: patient?.dentalHistory || "",
-      habitHistory: patient?.habitHistory || "",
-      allergies: patient?.allergies || "",
-      lastDentalVisitDate: patient?.lastDentalVisitDate || "",
+      name: patient?.name ?? "",
+      phone: patient?.phone ?? "",
+      registrationDate: patient?.registrationDate ?? format(new Date(), "yyyy-MM-dd"),
+      referredByPatientId: patient?.referredByPatientId,
     },
   });
 
@@ -145,11 +274,7 @@ export default function PatientDetails() {
         name: patient.name,
         phone: patient.phone,
         registrationDate: patient.registrationDate,
-        chiefDentalComplaint: patient.chiefDentalComplaint || "",
-        dentalHistory: patient.dentalHistory || "",
-        habitHistory: patient.habitHistory || "",
-        allergies: patient.allergies || "",
-        lastDentalVisitDate: patient.lastDentalVisitDate || "",
+        referredByPatientId: patient.referredByPatientId,
       });
     }
   }, [patient, isEditingPatient]);
@@ -241,41 +366,41 @@ export default function PatientDetails() {
     },
   });
 
-  const updateToothMutation = useMutation({
-    mutationFn: async (data: UpdateToothForm) => {
-      if (!patientId || !selectedTooth) throw new Error("No tooth selected");
+  // const updateToothMutation = useMutation({
+  //   mutationFn: async (data: UpdateToothForm) => {
+  //     if (!patientId || !selectedTooth) throw new Error("No tooth selected");
 
-      // Calculate quadrant based on FDI
-      const q = Math.floor(selectedTooth / 10);
-      let quadrant = "UR";
-      if (q === 2 || q === 6) quadrant = "UL";
-      if (q === 3 || q === 7) quadrant = "LL";
-      if (q === 4 || q === 8) quadrant = "LR";
+  //     // Calculate quadrant based on FDI
+  //     const q = Math.floor(selectedTooth / 10);
+  //     let quadrant = "UR";
+  //     if (q === 2 || q === 6) quadrant = "UL";
+  //     if (q === 3 || q === 7) quadrant = "LL";
+  //     if (q === 4 || q === 8) quadrant = "LR";
 
-      return await apiRequest("POST", "/api/tooth-records", {
-        patientId,
-        toothNumber: selectedTooth,
-        quadrant,
-        condition: data.condition,
-        notes: data.notes
-      });
-    },
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: ["/api/patients", patientId, "tooth-records"] });
-      toast({
-        title: "Tooth Record Updated",
-        description: `Tooth ${selectedTooth} has been updated.`,
-      });
-      setSelectedTooth(null);
-    },
-    onError: (error: Error) => {
-      toast({
-        title: "Failed to Update Tooth",
-        description: error.message,
-        variant: "destructive",
-      });
-    },
-  });
+  //     return await apiRequest("POST", "/api/tooth-records", {
+  //       patientId,
+  //       toothNumber: selectedTooth,
+  //       quadrant,
+  //       condition: data.condition,
+  //       notes: data.notes
+  //     });
+  //   },
+  //   onSuccess: () => {
+  //     queryClient.invalidateQueries({ queryKey: ["/api/patients", patientId, "tooth-records"] });
+  //     toast({
+  //       title: "Tooth Record Updated",
+  //       description: `Tooth ${selectedTooth} has been updated.`,
+  //     });
+  //     setSelectedTooth(null);
+  //   },
+  //   onError: (error: Error) => {
+  //     toast({
+  //       title: "Failed to Update Tooth",
+  //       description: error.message,
+  //       variant: "destructive",
+  //     });
+  //   },
+  // });
 
   const deletePatientMutation = useMutation({
     mutationFn: async () => {
@@ -318,21 +443,36 @@ export default function PatientDetails() {
     }
   };
 
-  const handleToothClick = (toothId: number) => {
-    setSelectedTooth(toothId);
-    // Pre-fill if record exists
-    const record = toothRecords.find(r => r.toothNumber === toothId);
-    if (record) {
-      toothForm.reset({
-        condition: record.condition as any,
-        notes: record.notes || ""
-      });
+  // const handleToothClick = (toothId: number) => {
+  //   setSelectedTooth(toothId);
+  //   // Pre-fill if record exists
+  //   const record = toothRecords.find(r => r.toothNumber === toothId);
+  //   if (record) {
+  //     toothForm.reset({
+  //       condition: record.condition as any,
+  //       notes: record.notes || ""
+  //     });
+  //   } else {
+  //     toothForm.reset({
+  //       condition: "Healthy",
+  //       notes: ""
+  //     });
+  //   }
+  // };
+
+  const handlePartSelect = (part: string) => {
+    // Check if already selected (persisted)
+    const existing = bodyRecords.find((r) => r.bodyPart === part);
+
+    if (existing) {
+      deleteBodyRecordMutation.mutate(part);
     } else {
-      toothForm.reset({
-        condition: "Healthy",
-        notes: ""
-      });
+      createBodyRecordMutation.mutate(part);
     }
+
+    // Also update local state for immediate visual feedback if needed, although standard method relies on query refetch
+    // But BodyChart might use selectedPart prop for temporary highlighting
+    setSelectedPart(part === selectedPart ? null : part);
   };
 
   const sortedVisits = [...visits].sort(
@@ -507,20 +647,14 @@ export default function PatientDetails() {
                   <Calendar className="w-3 h-3" />
                   Registered: {patient?.registrationDate ? (isValid(new Date(patient.registrationDate)) ? format(new Date(patient.registrationDate), "dd MMM yyyy") : "N/A") : "N/A"}
                 </span>
-                {patient.lastDentalVisitDate && (
-                  <>
-                    <span className="text-border">|</span>
-                    <span className="flex items-center gap-1 text-primary">
-                      <Clock className="w-3 h-3" />
-                      Last Dental Visit: {isValid(new Date(patient.lastDentalVisitDate)) ? format(new Date(patient.lastDentalVisitDate), "dd MMM yyyy") : "N/A"}
-                    </span>
-                  </>
-                )}
               </div>
             </div>
           )}
         </div>
       </div>
+
+      {/* REFERRAL INFORMATION CARD */}
+      <ReferralInfoCard patientId={patientId!} />
 
       <Tabs defaultValue="visits" className="space-y-6">
         <TabsList>
@@ -534,7 +668,7 @@ export default function PatientDetails() {
           </TabsTrigger>
           <TabsTrigger value="chart" className="flex gap-2">
             <Activity className="w-4 h-4" />
-            Dental Chart
+            Body Chart
           </TabsTrigger>
           <TabsTrigger value="prescription" className="flex gap-2">
             <FileText className="w-4 h-4" />
@@ -551,127 +685,6 @@ export default function PatientDetails() {
         </TabsContent>
 
         <TabsContent value="visits" className="space-y-6">
-          {/* DENTAL HISTORY SUMMARY CARD */}
-          {(patient.chiefDentalComplaint || patient.dentalHistory || patient.habitHistory || patient.allergies) && (
-            <Card className="bg-muted/10 border-primary/20">
-              <CardHeader className="pb-3">
-                <CardTitle className="text-base flex items-center gap-2">
-                  <Activity className="w-4 h-4 text-primary" />
-                  Dental & Medical Profile
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="grid md:grid-cols-2 gap-4 text-sm">
-                {patient.chiefDentalComplaint && (
-                  <div>
-                    <span className="font-semibold text-muted-foreground block mb-1">Chief Complaint</span>
-                    {patient.chiefDentalComplaint}
-                  </div>
-                )}
-                {patient.allergies && (
-                  <div className="text-red-600">
-                    <span className="font-semibold block mb-1 flex items-center gap-1">
-                      <AlertCircle className="w-3 h-3" /> Allergies
-                    </span>
-                    {patient.allergies}
-                  </div>
-                )}
-                {patient.habitHistory && (
-                  <div>
-                    <span className="font-semibold text-muted-foreground block mb-1">Habits</span>
-                    {patient.habitHistory}
-                  </div>
-                )}
-                {patient.dentalHistory && (
-                  <div>
-                    <span className="font-semibold text-muted-foreground block mb-1">Past History</span>
-                    {patient.dentalHistory}
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-          )}
-
-          <div className="flex gap-2">
-            <Dialog open={isDentalProfileDialogOpen} onOpenChange={setIsDentalProfileDialogOpen}>
-              <DialogTrigger asChild>
-                <Button variant="outline" size="sm">
-                  <Pencil className="w-4 h-4 mr-2" />
-                  Edit Profile
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="max-w-2xl max-h-[90vh] overflow-y-auto">
-                <DialogHeader>
-                  <DialogTitle>Edit Dental & Medical Profile</DialogTitle>
-                </DialogHeader>
-                <Form {...patientForm}>
-                  <form onSubmit={patientForm.handleSubmit((data) => {
-                    updatePatientMutation.mutate(data, {
-                      onSuccess: () => {
-                        setIsDentalProfileDialogOpen(false);
-                      }
-                    });
-                  })} className="space-y-4">
-
-                    {/* Name, Phone, Date removed as per user request */}
-
-                    <FormField
-                      control={patientForm.control}
-                      name="chiefDentalComplaint"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Chief Complaint</FormLabel>
-                          <FormControl>
-                            {/* changed to Input for full editability */}
-                            <Input {...field} value={field.value || ""} placeholder="e.g. Tooth pain, Sensitivity" />
-                          </FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={patientForm.control}
-                      name="dentalHistory"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Dental History</FormLabel>
-                          <FormControl><Textarea {...field} value={field.value || ""} /></FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={patientForm.control}
-                      name="habitHistory"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Habits</FormLabel>
-                          <FormControl><Input {...field} value={field.value || ""} placeholder="Tobacco, Smoking, etc." /></FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <FormField
-                      control={patientForm.control}
-                      name="allergies"
-                      render={({ field }) => (
-                        <FormItem>
-                          <FormLabel>Allergies & Medical</FormLabel>
-                          <FormControl><Textarea {...field} value={field.value || ""} placeholder="Drug allergies, medical conditions..." /></FormControl>
-                          <FormMessage />
-                        </FormItem>
-                      )}
-                    />
-
-                    <Button type="submit">Save Changes</Button>
-                  </form>
-                </Form>
-              </DialogContent>
-            </Dialog>
-          </div>
-
           <Card>
             <CardHeader className="flex flex-row items-center justify-between gap-4 pb-4">
               <div>
@@ -841,10 +854,11 @@ export default function PatientDetails() {
         </TabsContent>
 
         <TabsContent value="chart">
-          <ToothChart
-            records={toothRecords}
-            onToothClick={handleToothClick}
-            className="bg-card"
+          <BodyChart
+            selectedPart={selectedPart}
+            onPartSelect={handlePartSelect}
+            injuries={bodyRecords.map(r => ({ bodyPart: r.bodyPart, painLevel: r.painLevel || 0 }))}
+            className="bg-card w-full"
           />
         </TabsContent>
       </Tabs>
@@ -935,58 +949,9 @@ export default function PatientDetails() {
           )}
         </DialogContent>
       </Dialog>
-      <Dialog open={!!selectedTooth} onOpenChange={(open) => !open && setSelectedTooth(null)}>
-        <DialogContent className="sm:max-w-md">
-          <DialogHeader>
-            <DialogTitle>Edit Tooth {selectedTooth}</DialogTitle>
-          </DialogHeader>
-          <Form {...toothForm}>
-            <form onSubmit={toothForm.handleSubmit((data) => updateToothMutation.mutate(data))} className="space-y-4">
-              <FormField
-                control={toothForm.control}
-                name="condition"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Condition</FormLabel>
-                    <Select onValueChange={field.onChange} defaultValue={field.value}>
-                      <FormControl>
-                        <SelectTrigger>
-                          <SelectValue placeholder="Select condition" />
-                        </SelectTrigger>
-                      </FormControl>
-                      <SelectContent>
-                        {TOOTH_CONDITIONS.map((c) => (
-                          <SelectItem key={c} value={c}>{c}</SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={toothForm.control}
-                name="notes"
-                render={({ field }) => (
-                  <FormItem>
-                    <FormLabel>Notes</FormLabel>
-                    <FormControl>
-                      <Textarea placeholder="Add notes about this tooth..." {...field} />
-                    </FormControl>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <div className="flex justify-end gap-2">
-                <Button type="button" variant="outline" onClick={() => setSelectedTooth(null)}>Cancel</Button>
-                <Button type="submit" disabled={updateToothMutation.isPending}>
-                  {updateToothMutation.isPending ? "Saving..." : "Save"}
-                </Button>
-              </div>
-            </form>
-          </Form>
-        </DialogContent>
-      </Dialog>
-    </div >
+      {/* <Dialog open={!!selectedTooth} onOpenChange={(open) => !open && setSelectedTooth(null)}> */}
+      {/* Temporarily disabled tooth edit dialog */}
+      {/* </Dialog> */}
+    </div>
   );
 }

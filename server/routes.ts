@@ -31,6 +31,8 @@ import {
   insertToothRecordSchema,
   insertTreatmentSittingSchema,
   updateTreatmentSittingSchema,
+  insertBodyRecordSchema,
+  insertReferrerSchema,
 } from "@shared/schema";
 import { z } from "zod";
 import { ensureAuthenticated } from "./auth";
@@ -159,6 +161,99 @@ export async function registerRoutes(
     }
   });
 
+  // ==================== PATIENT REFERRALS ====================
+
+  app.get("/api/patients/:id/referrals", async (req, res) => {
+    try {
+      const referralInfo = await storage.getPatientReferralInfo(req.params.id);
+      res.json(referralInfo);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch referral information" });
+    }
+  });
+
+  // ==================== REFERRERS ====================
+
+  app.get("/api/referrers", async (req, res) => {
+    try {
+      const referrers = await storage.getReferrers();
+      // Calculate stats for each referrer to show in the list
+      // This might be expensive if there are many referrers, but for now it's fine
+      // Optimization: Implement getReferrersWithStats() in storage if needed later
+      const referrersWithStats = await Promise.all(
+        referrers.map(async (r) => {
+          const stats = await storage.getReferrerStats(r.id);
+          return stats || r;
+        })
+      );
+      res.json(referrersWithStats);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch referrers" });
+    }
+  });
+
+  app.get("/api/referrers/:id", async (req, res) => {
+    try {
+      const referrer = await storage.getReferrer(req.params.id);
+      if (!referrer) {
+        return res.status(404).json({ error: "Referrer not found" });
+      }
+      res.json(referrer);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch referrer Details" });
+    }
+  });
+
+  app.post("/api/referrers", async (req, res) => {
+    console.log("POST /api/referrers request received:", req.body);
+    try {
+      const validated = insertReferrerSchema.parse(req.body);
+      const referrer = await storage.createReferrer(validated);
+      console.log("Referrer created successfully:", referrer.id);
+      res.status(201).json(referrer);
+    } catch (error) {
+      console.error("Error creating referrer:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      res.status(500).json({ error: "Failed to create referrer" });
+    }
+  });
+
+  app.get("/api/referrers/:id/stats", async (req, res) => {
+    try {
+      const stats = await storage.getReferrerStats(req.params.id);
+      if (!stats) {
+        return res.status(404).json({ error: "Referrer not found" });
+      }
+      res.json(stats);
+    } catch (error) {
+      res.status(500).json({ error: "Failed to fetch referrer stats" });
+    }
+  });
+
+  app.post("/api/referrers/:id/payout", async (req, res) => {
+    try {
+      const { amount } = z.object({ amount: z.number().positive() }).parse(req.body);
+      const referrer = await storage.getReferrer(req.params.id);
+      if (!referrer) {
+        return res.status(404).json({ error: "Referrer not found" });
+      }
+      if (amount > referrer.availableCredit) {
+        return res.status(400).json({ error: "Amount exceeds available credit" });
+      }
+
+      // Deduct from available credit (pass negative amount)
+      await storage.updateReferrerCredit(req.params.id, -amount);
+      res.json({ message: "Payout recorded successfully" });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      res.status(500).json({ error: "Failed to record payout" });
+    }
+  });
+
   // ==================== VISITS ====================
 
   app.get("/api/visits", async (req, res) => {
@@ -178,6 +273,7 @@ export async function registerRoutes(
       res.status(500).json({ error: "Failed to fetch visits" });
     }
   });
+
 
   app.post("/api/visits", async (req, res) => {
     try {
@@ -973,6 +1069,51 @@ export async function registerRoutes(
     } catch (error) {
       res.status(500).json({ error: "Failed to delete treatment sitting" });
     }
+  });
+
+  // ==================== BODY RECORDS (Body Chart) ====================
+
+  // Get all body records for a patient
+  app.get("/api/patients/:patientId/body-records", async (req, res) => {
+    try {
+      const records = await storage.getBodyRecords(req.params.patientId);
+      res.json(records);
+    } catch (error) {
+      console.error("GET body-records error:", error);
+      res.status(500).json({ error: "Failed to fetch body records" });
+    }
+  });
+
+  // Create/Update body record
+  app.post("/api/body-records", async (req, res) => {
+    try {
+      const record = insertBodyRecordSchema.parse(req.body);
+      const created = await storage.createBodyRecord(record);
+      res.status(201).json(created);
+    } catch (error) {
+      console.error("POST body-records error:", error);
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ error: error.errors });
+      }
+      res.status(500).json({ error: "Failed to create body record" });
+    }
+  });
+
+  // Delete body record
+  app.delete("/api/patients/:patientId/body-records/:bodyPart", async (req, res) => {
+    try {
+      await storage.deleteBodyRecord(req.params.patientId, req.params.bodyPart);
+      res.status(204).send();
+    } catch (error) {
+      console.error("DELETE body-records error:", error);
+      res.status(500).json({ error: "Failed to delete body record" });
+    }
+  });
+
+  // Catch-all for API routes to prevent falling through to frontend index.html
+  // IMPORTANT: This must be registered AFTER all other API routes.
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ error: `API route not found: ${req.method} ${req.path}` });
   });
 
   return httpServer;

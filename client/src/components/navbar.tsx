@@ -14,7 +14,8 @@ import {
   Calendar,
   Database,
   ChevronDown,
-  LogOut
+  LogOut,
+  Users
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useTheme } from "@/components/theme-provider";
@@ -43,6 +44,7 @@ const navItems = [
     ]
   },
   { path: "/reports", label: "Reports", icon: BarChart3 },
+  { path: "/referrals", label: "Referrals", icon: Users },
 ];
 
 function NavDropdown({ item, isActive }: { item: any, isActive: boolean }) {
@@ -104,7 +106,7 @@ export function Navbar() {
               <Heart className="w-5 h-5 text-primary-foreground" />
             </div>
             <span className="text-lg font-semibold tracking-tight hidden sm:inline-block" data-testid="text-clinic-name">
-              Dental Care
+              TeraCare
             </span>
           </Link>
 
