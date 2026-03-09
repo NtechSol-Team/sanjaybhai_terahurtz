@@ -50,7 +50,7 @@ import {
   type SittingDetail,
   type BodyRecord,
   type InsertBodyRecord,
-} from "@shared/schema";
+} from "../shared/schema.js";
 import { randomUUID } from "crypto";
 import { Pool } from "pg";
 

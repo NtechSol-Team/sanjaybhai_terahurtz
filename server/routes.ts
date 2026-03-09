@@ -33,7 +33,7 @@ import {
   updateTreatmentSittingSchema,
   insertBodyRecordSchema,
   insertReferrerSchema,
-} from "@shared/schema";
+} from "../shared/schema.js";
 import { z } from "zod";
 import { ensureAuthenticated } from "./auth.js";
 
@@ -377,7 +377,7 @@ export async function registerRoutes(
   // Seed common dental treatments
   app.post("/api/treatments/seed", async (req, res) => {
     try {
-      const { COMMON_DENTAL_TREATMENTS } = await import("@shared/schema");
+      const { COMMON_DENTAL_TREATMENTS } = await import("../shared/schema.js");
       let count = 0;
       for (const t of COMMON_DENTAL_TREATMENTS) {
         // Simple check to avoid duplicates by name

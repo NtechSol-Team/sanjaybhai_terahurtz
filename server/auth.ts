@@ -3,7 +3,7 @@ import { Strategy as LocalStrategy } from "passport-local";
 import { Express } from "express";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
-import { User } from "@shared/schema";
+import { User } from "../shared/schema.js";
 import { pool } from "./storage.js";
 
 // Helper to compare strings safely if we were using a real DB, 
