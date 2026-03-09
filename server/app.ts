@@ -4,9 +4,9 @@ import cors from "cors";
 import compression from "compression";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import { registerRoutes } from "./routes";
-import { storage } from "./storage";
-import { setupAuth } from "./auth";
+import { registerRoutes } from "./routes.js";
+import { storage } from "./storage.js";
+import { setupAuth } from "./auth.js";
 import { createServer } from "http";
 
 const app = express();

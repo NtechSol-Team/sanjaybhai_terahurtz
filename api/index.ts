@@ -1,5 +1,5 @@
 import { VercelRequest, VercelResponse } from "@vercel/node";
-import app, { initializeApp } from "../server/app";
+import app, { initializeApp } from "../server/app.js";
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
     // Ensure the database, storage, and routes are fully initialized 

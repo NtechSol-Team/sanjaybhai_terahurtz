@@ -4,7 +4,7 @@ import { Express } from "express";
 import session from "express-session";
 import connectPgSimple from "connect-pg-simple";
 import { User } from "@shared/schema";
-import { pool } from "./storage";
+import { pool } from "./storage.js";
 
 // Helper to compare strings safely if we were using a real DB, 
 // for now we match against env vars as requested.

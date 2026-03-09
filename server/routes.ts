@@ -16,7 +16,7 @@
 
 import type { Express } from "express";
 import { createServer, type Server } from "http";
-import { storage } from "./storage";
+import { storage } from "./storage.js";
 import {
   insertPatientSchema,
   insertVisitSchema,
@@ -35,7 +35,7 @@ import {
   insertReferrerSchema,
 } from "@shared/schema";
 import { z } from "zod";
-import { ensureAuthenticated } from "./auth";
+import { ensureAuthenticated } from "./auth.js";
 
 export async function registerRoutes(
   httpServer: Server,
