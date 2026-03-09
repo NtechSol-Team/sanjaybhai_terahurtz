@@ -413,9 +413,15 @@ const createTableStatements = [
     is_patient BOOLEAN DEFAULT FALSE,
     patient_id TEXT, 
     total_credit_earned DOUBLE PRECISION DEFAULT 0,
-    available_credit DOUBLE PRECISION DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-  )`
+  )`,
+  `CREATE TABLE IF NOT EXISTS "session" (
+    "sid" varchar NOT NULL COLLATE "default",
+    "sess" json NOT NULL,
+    "expire" timestamp(6) NOT NULL,
+    CONSTRAINT "session_pkey" PRIMARY KEY ("sid") NOT DEFERRABLE INITIALLY IMMEDIATE
+  )`,
+  `CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire")`
 ];
 
 // Dental-specific column additions for existing databases
